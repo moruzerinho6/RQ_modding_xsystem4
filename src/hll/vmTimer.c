@@ -18,6 +18,7 @@
 
 #include "hll.h"
 #include "id_pool.h"
+#include "vm.h"
 
 struct vm_timer {
 	uint64_t origin;
@@ -77,7 +78,7 @@ static int vmTimer_Get(int handle)
 
 static void vmTimer_Wait(int time)
 {
-	SDL_Delay(time);
+	vm_sleep(time);
 }
 
 static void vmTimer_Pass(int handle, int time)
@@ -87,7 +88,7 @@ static void vmTimer_Pass(int handle, int time)
 		return;
 	int ms = timer->origin + time - SDL_GetTicks64();
 	if (ms > 0)
-		SDL_Delay(ms);
+		vm_sleep(ms);
 }
 
 HLL_LIBRARY(vmTimer,

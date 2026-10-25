@@ -5,6 +5,8 @@
 #ifndef RQ_PROFILE_H
 #define RQ_PROFILE_H
 
+#include <stddef.h>
+
 enum rq_prof_bucket {
 	RQ_PROF_INPUT = 0,   /* SDL event pump */
 	RQ_PROF_PLUGIN,      /* sprite plugin update (Tapir + dungeon + …) */
@@ -25,6 +27,8 @@ void rq_prof_end(enum rq_prof_bucket b);
 void rq_prof_count(enum rq_prof_bucket b);
 void rq_prof_frame(void);
 void rq_prof_toggle_pause(void);
+void rq_prof_note_sleep(int requested_ms, double elapsed_ms, const char *ain_stack);
+void vm_prof_ain_stack(char *buf, size_t n);
 
 #else
 
@@ -35,6 +39,17 @@ static inline void rq_prof_end(enum rq_prof_bucket b) { (void)b; }
 static inline void rq_prof_count(enum rq_prof_bucket b) { (void)b; }
 static inline void rq_prof_frame(void) {}
 static inline void rq_prof_toggle_pause(void) {}
+static inline void rq_prof_note_sleep(int requested_ms, double elapsed_ms, const char *ain_stack)
+{
+	(void)requested_ms;
+	(void)elapsed_ms;
+	(void)ain_stack;
+}
+static inline void vm_prof_ain_stack(char *buf, size_t n)
+{
+	if (buf && n)
+		buf[0] = '\0';
+}
 
 #endif
 

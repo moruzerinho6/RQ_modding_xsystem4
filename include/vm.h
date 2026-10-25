@@ -18,6 +18,7 @@
 #define SYSTEM4_VM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "system4.h"
 
@@ -112,6 +113,9 @@ int vm_execute_ain(struct ain *program);
 void vm_call(int fno, int struct_page);
 int vm_time(void);
 void vm_sleep(int ms);
+#ifdef RQ_PROFILE
+void vm_prof_ain_stack(char *buf, size_t n);
+#endif
 
 void hll_call(int libno, int fno);
 bool library_exists(int libno);

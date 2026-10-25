@@ -11,6 +11,11 @@ meson setup build-profile --buildtype=debugoptimized -Dprofile=true
 ninja -C build-profile
 ```
 
-Output: `xsystem4-profile.csv` next to the exe (override with env `XSYS4_PROFILE`). F12 pauses capture.
+Output next to the exe (override with env `XSYS4_PROFILE`):
 
-Do not push this branch until Moru asks.
+- `xsystem4-profile.csv` — one row per present
+- `xsystem4-profile-ain.log` — sleep/leftover events over ~50 ms with AIN stack
+
+New CSV columns vs the first hub capture: `sleep_ms`, `n_sleep`, `sleep_req_ms`, `leftover_ms`, `leftover_other_ms`, `ain`.
+
+F12 pauses capture. Do not push this branch until Moru asks.

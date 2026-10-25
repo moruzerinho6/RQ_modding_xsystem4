@@ -29,6 +29,7 @@ static int Timer_Get(void)
 
 static void Timer_Wait(int time)
 {
+	/* Timed + AIN-attributed in vm_sleep when -Dprofile=true. */
 	vm_sleep(time);
 }
 

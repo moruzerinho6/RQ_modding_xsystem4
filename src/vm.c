@@ -34,6 +34,7 @@
 
 #include "debugger.h"
 #include "input.h"
+#include "profile.h"
 #include "savedata.h"
 #include "vm.h"
 #include "vm/heap.h"
@@ -2554,9 +2555,68 @@ int vm_time(void)
 	return SDL_GetTicks();
 }
 
+#ifdef RQ_PROFILE
+void vm_prof_ain_stack(char *buf, size_t n)
+{
+	if (!buf || n == 0)
+		return;
+	buf[0] = '\0';
+	if (!ain || call_stack_ptr <= 0)
+		return;
+
+	size_t used = 0;
+	int start = call_stack_ptr - 1;
+	int end = call_stack_ptr - 8;
+	if (end < 0)
+		end = 0;
+
+	for (int i = start; i >= end; i--) {
+		int fno = call_stack[i].fno;
+		if (fno < 0 || fno >= ain->nr_functions)
+			continue;
+		const char *sjis = ain->functions[fno].name;
+		if (!sjis || !sjis[0])
+			continue;
+		char *utf = sjis2utf(sjis, 0);
+		const char *name = utf ? utf : sjis;
+		size_t len = strlen(name);
+		if (used) {
+			if (used + 1 >= n)
+				break;
+			buf[used++] = ';';
+			buf[used] = '\0';
+		}
+		if (used + len >= n) {
+			size_t room = n - used - 1;
+			if (room > 0)
+				memcpy(buf + used, name, room);
+			used += room;
+			buf[used] = '\0';
+			free(utf);
+			break;
+		}
+		memcpy(buf + used, name, len);
+		used += len;
+		buf[used] = '\0';
+		free(utf);
+	}
+}
+#endif
+
 void vm_sleep(int ms)
 {
+#ifdef RQ_PROFILE
+	uint64_t t0 = SDL_GetPerformanceCounter();
+#endif
 	SDL_Delay(ms);
+#ifdef RQ_PROFILE
+	uint64_t t1 = SDL_GetPerformanceCounter();
+	uint64_t freq = SDL_GetPerformanceFrequency();
+	double elapsed = freq ? (double)(t1 - t0) * 1000.0 / (double)freq : (double)(ms > 0 ? ms : 0);
+	char stack[512];
+	vm_prof_ain_stack(stack, sizeof(stack));
+	rq_prof_note_sleep(ms, elapsed, stack);
+#endif
 }
 
 _Noreturn void vm_exit(int code)
