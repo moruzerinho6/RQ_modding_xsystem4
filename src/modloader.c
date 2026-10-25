@@ -626,6 +626,7 @@ static void open_rq(lua_State *L)
 	lua_newtable(L);
 	set_cfn(L, "camera", l_dungeon_camera);
 	set_cfn(L, "active", rq_lua_dungeon_active);
+	set_cfn(L, "exploring", rq_lua_dungeon_exploring);
 	lua_setfield(L, -2, "dungeon");
 
 	lua_newtable(L);

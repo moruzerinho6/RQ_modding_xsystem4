@@ -32,6 +32,7 @@
 #define MAP_DIM 51
 #define MAP_BMAP_MAX 17
 #define UNID_NAME "Unidentified item"
+#define UNID_COMMENT "You have not identified this item yet."
 /* Vanilla unidentified CGs (common ?). Rare ? CGs would leak rarity. */
 #define UNID_CG_WEAPON 11337
 #define UNID_CG_ARMOR 11338
@@ -45,6 +46,7 @@
 #define SI_NAME 3
 #define SI_KIND 4
 #define SI_UNID 7
+#define SI_INFO 12
 
 /* sM member slots */
 #define SM_MAPTT 1
@@ -426,6 +428,30 @@ static char *item_name_utf(int ii)
 	return utf ? utf : strdup("?");
 }
 
+static char *item_info_utf(int ii)
+{
+	struct page *p = item_page(ii);
+	int slot;
+	struct string *s;
+	char *utf, *q;
+	if (!p || SI_INFO >= p->nr_vars)
+		return strdup("");
+	slot = p->values[SI_INFO].i;
+	if (!string_index_valid(slot))
+		return strdup("");
+	s = heap_get_string(slot);
+	if (!s || !s->text)
+		return strdup("");
+	utf = sjis2utf(s->text, 0);
+	if (!utf)
+		return strdup("");
+	for (q = utf; *q; q++) {
+		if (*q == '$')
+			*q = '\n';
+	}
+	return utf;
+}
+
 static void loot_lock_tile(int x, int y, int lank)
 {
 	int *tt, *tz, type, fixed, ii;
@@ -497,7 +523,7 @@ static int loot_open(int encoded)
 static void push_item_row(lua_State *L, int ii, const char *source, int floor, int x, int y)
 {
 	int catalog, twin, seen, cg;
-	char *name;
+	char *name, *comment;
 
 	lua_newtable(L);
 	lua_pushinteger(L, ii);
@@ -521,11 +547,13 @@ static void push_item_row(lua_State *L, int ii, const char *source, int floor, i
 		int src = twin ? twin : ii;
 		cg = item_get(src, SI_CG);
 		name = item_name_utf(src);
+		comment = item_info_utf(src);
 		lua_pushinteger(L, 0);
 		lua_setfield(L, -2, "overlay");
 	} else {
 		cg = unid_cg(ii);
 		name = strdup(UNID_NAME);
+		comment = strdup(UNID_COMMENT);
 		lua_pushinteger(L, 10403);
 		lua_setfield(L, -2, "overlay");
 	}
@@ -533,7 +561,10 @@ static void push_item_row(lua_State *L, int ii, const char *source, int floor, i
 	lua_setfield(L, -2, "cg");
 	lua_pushstring(L, name ? name : UNID_NAME);
 	lua_setfield(L, -2, "name");
+	lua_pushstring(L, comment ? comment : UNID_COMMENT);
+	lua_setfield(L, -2, "comment");
 	free(name);
+	free(comment);
 }
 
 int rq_loot_list(lua_State *L)

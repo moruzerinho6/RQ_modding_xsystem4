@@ -31,7 +31,7 @@
 #include "vm.h"
 #include "xsystem4.h"
 
-#define HUD_MAX_CMD 96
+#define HUD_MAX_CMD 160
 #define HUD_MAX_CG 48
 
 enum hud_kind {
@@ -55,6 +55,10 @@ struct hud_cg {
 };
 
 static int g_dungeon;
+static int g_shown;
+static int g_suspended;
+static int g_battle;
+static int g_profile;
 static int g_block_mouse;
 static int g_on_frame_ref = LUA_NOREF;
 static int g_mx, g_my, g_left, g_right, g_left_edge, g_prev_left;
@@ -94,7 +98,7 @@ static void commit_wrap(struct ain *ain, int fno, struct buffer *out)
 	ain->code_size += out->index;
 }
 
-static int wrap_method_flag(struct ain *ain, int fno, int sys)
+static int wrap_method_flag(struct ain *ain, int fno, int sys, int before)
 {
 	int dup = ain_dup_function(ain, fno);
 	int nargs = ain->functions[fno].nr_args;
@@ -103,19 +107,85 @@ static int wrap_method_flag(struct ain *ain, int fno, int sys)
 
 	buffer_init(&out, NULL, 0);
 	emit1(&out, FUNC, fno);
-	/* CALLMETHOD pops nr_args, then the struct page under them.
-	 * Vanilla: PUSH this, PUSH arg0..argN, CALLMETHOD (see T_Sprite@setCg).
-	 * Args then PUSHSTRUCTPAGE made create's this = nZ and blew up in
-	 * stack_pop_var (heap/page like 121/14) while loading a dungeon. */
+	if (before)
+		emit1(&out, CALLSYS, sys);
+	/* CALLMETHOD pops nr_args, then the struct page under them. */
 	emit0(&out, PUSHSTRUCTPAGE);
 	for (i = 0; i < nargs; i++)
 		emit1(&out, SH_LOCALREF, i);
 	emit1(&out, CALLMETHOD, dup);
-	emit1(&out, CALLSYS, sys);
+	if (!before)
+		emit1(&out, CALLSYS, sys);
 	emit0(&out, RETURN);
 	emit1(&out, ENDFUNC, fno);
 	commit_wrap(ain, fno, &out);
-	rq_log("hud: wrap method fno=%d nargs=%d sys=0x%x", fno, nargs, sys);
+	rq_log("hud: wrap method fno=%d nargs=%d sys=0x%x before=%d",
+	       fno, nargs, sys, before);
+	return 1;
+}
+
+static int wrap_func_flag(struct ain *ain, int fno, int sys, int before)
+{
+	int dup = ain_dup_function(ain, fno);
+	int nargs = ain->functions[fno].nr_args;
+	int i;
+	struct buffer out;
+
+	buffer_init(&out, NULL, 0);
+	emit1(&out, FUNC, fno);
+	if (before)
+		emit1(&out, CALLSYS, sys);
+	for (i = 0; i < nargs; i++)
+		emit1(&out, SH_LOCALREF, i);
+	emit1(&out, CALLFUNC, dup);
+	if (!before)
+		emit1(&out, CALLSYS, sys);
+	emit0(&out, RETURN);
+	emit1(&out, ENDFUNC, fno);
+	commit_wrap(ain, fno, &out);
+	rq_log("hud: wrap func fno=%d nargs=%d sys=0x%x before=%d",
+	       fno, nargs, sys, before);
+	return 1;
+}
+
+static int wrap_func_around(struct ain *ain, int fno, int sys_on, int sys_off)
+{
+	int dup = ain_dup_function(ain, fno);
+	int nargs = ain->functions[fno].nr_args;
+	int i;
+	struct buffer out;
+
+	buffer_init(&out, NULL, 0);
+	emit1(&out, FUNC, fno);
+	emit1(&out, CALLSYS, sys_on);
+	for (i = 0; i < nargs; i++)
+		emit1(&out, SH_LOCALREF, i);
+	emit1(&out, CALLFUNC, dup);
+	emit1(&out, CALLSYS, sys_off);
+	emit0(&out, RETURN);
+	emit1(&out, ENDFUNC, fno);
+	commit_wrap(ain, fno, &out);
+	rq_log("hud: wrap func around fno=%d nargs=%d on=0x%x off=0x%x",
+	       fno, nargs, sys_on, sys_off);
+	return 1;
+}
+
+static int wrap_set_show(struct ain *ain, int fno)
+{
+	int dup = ain_dup_function(ain, fno);
+	struct buffer out;
+
+	buffer_init(&out, NULL, 0);
+	emit1(&out, FUNC, fno);
+	emit0(&out, PUSHSTRUCTPAGE);
+	emit1(&out, SH_LOCALREF, 0);
+	emit1(&out, CALLMETHOD, dup);
+	emit1(&out, SH_LOCALREF, 0);
+	emit1(&out, CALLSYS, VM_XSYS_HUD_SHOW);
+	emit0(&out, RETURN);
+	emit1(&out, ENDFUNC, fno);
+	commit_wrap(ain, fno, &out);
+	rq_log("hud: wrap T_MapParts@setShow fno=%d", fno);
 	return 1;
 }
 
@@ -170,6 +240,11 @@ int rq_dungeon_active(void)
 	return g_dungeon;
 }
 
+int rq_dungeon_exploring(void)
+{
+	return g_dungeon && g_shown && !g_suspended && !g_battle && !g_profile;
+}
+
 int rq_hud_block_mouse(void)
 {
 	return g_block_mouse;
@@ -180,10 +255,39 @@ int rq_hud_syscall(int code)
 	switch ((enum vm_extra_syscall)code) {
 	case VM_XSYS_HUD_ON:
 		g_dungeon = 1;
+		g_shown = 1;
+		g_suspended = 0;
+		g_battle = 0;
+		g_profile = 0;
 		return 1;
 	case VM_XSYS_HUD_OFF:
 		g_dungeon = 0;
+		g_shown = 0;
+		g_suspended = 0;
+		g_battle = 0;
+		g_profile = 0;
 		g_block_mouse = 0;
+		return 1;
+	case VM_XSYS_HUD_SUSPEND:
+		g_suspended = 1;
+		return 1;
+	case VM_XSYS_HUD_RESUME:
+		g_suspended = 0;
+		return 1;
+	case VM_XSYS_HUD_BATTLE_ON:
+		g_battle = 1;
+		return 1;
+	case VM_XSYS_HUD_BATTLE_OFF:
+		g_battle = 0;
+		return 1;
+	case VM_XSYS_HUD_SHOW:
+		g_shown = stack_pop().i ? 1 : 0;
+		return 1;
+	case VM_XSYS_HUD_PROFILE_ON:
+		g_profile = 1;
+		return 1;
+	case VM_XSYS_HUD_PROFILE_OFF:
+		g_profile = 0;
 		return 1;
 	default:
 		return 0;
@@ -192,7 +296,7 @@ int rq_hud_syscall(int code)
 
 int rq_hud_install(struct ain *ain)
 {
-	int f_create, f_delete;
+	int f_create, f_delete, f_show, f_susp, f_res, f_battle, f_st_c, f_st_d;
 	if (!ain)
 		return 0;
 	f_create = find_fn(ain, "T_MapParts@create");
@@ -201,8 +305,29 @@ int rq_hud_install(struct ain *ain)
 		rq_log("hud: T_MapParts create/delete missing (%d/%d)", f_create, f_delete);
 		return 0;
 	}
-	wrap_method_flag(ain, f_create, VM_XSYS_HUD_ON);
-	wrap_method_flag(ain, f_delete, VM_XSYS_HUD_OFF);
+	wrap_method_flag(ain, f_create, VM_XSYS_HUD_ON, 0);
+	wrap_method_flag(ain, f_delete, VM_XSYS_HUD_OFF, 0);
+	f_show = find_fn(ain, "T_MapParts@setShow");
+	if (f_show >= 0)
+		wrap_set_show(ain, f_show);
+	f_susp = find_fn(ain, "マップ_サスペンド");
+	f_res = find_fn(ain, "マップ_レジューム");
+	if (f_susp >= 0)
+		wrap_func_flag(ain, f_susp, VM_XSYS_HUD_SUSPEND, 0);
+	if (f_res >= 0)
+		wrap_func_flag(ain, f_res, VM_XSYS_HUD_RESUME, 0);
+	f_battle = find_fn(ain, "Ｒ８戦闘");
+	if (f_battle >= 0)
+		wrap_func_around(ain, f_battle, VM_XSYS_HUD_BATTLE_ON,
+				 VM_XSYS_HUD_BATTLE_OFF);
+	f_st_c = find_fn(ain, "T_Status@create");
+	f_st_d = find_fn(ain, "T_Status@delete");
+	if (f_st_c >= 0)
+		wrap_method_flag(ain, f_st_c, VM_XSYS_HUD_PROFILE_ON, 0);
+	if (f_st_d >= 0)
+		wrap_method_flag(ain, f_st_d, VM_XSYS_HUD_PROFILE_OFF, 0);
+	rq_log("hud: exploring wraps show=%d susp=%d res=%d battle=%d status=%d/%d",
+	       f_show, f_susp, f_res, f_battle, f_st_c, f_st_d);
 	return 1;
 }
 
@@ -219,6 +344,12 @@ int rq_lua_on_frame(lua_State *L)
 int rq_lua_dungeon_active(lua_State *L)
 {
 	lua_pushboolean(L, g_dungeon);
+	return 1;
+}
+
+int rq_lua_dungeon_exploring(lua_State *L)
+{
+	lua_pushboolean(L, rq_dungeon_exploring());
 	return 1;
 }
 
@@ -407,6 +538,7 @@ void rq_hud_draw(void)
 			char *sjis;
 			int tw, th;
 			ts.size = c->size > 1.0f ? c->size : 16.0f;
+			ts.font_size = NULL;
 			ts.color.r = (uint8_t)c->r;
 			ts.color.g = (uint8_t)c->g;
 			ts.color.b = (uint8_t)c->b;
@@ -417,9 +549,11 @@ void rq_hud_draw(void)
 			tw = (int)(strlen(c->text) * ts.size) + 24;
 			if (tw < 32)
 				tw = 32;
-			th = (int)ts.size + 16;
+			th = (int)ts.size + 20;
+			/* COPY, not blended: blended glyphs keep dest alpha 0 so
+			 * labels were invisible (blank quads / empty Close). */
 			gfx_init_texture_rgba(&t, tw, th, (SDL_Color){ 0, 0, 0, 0 });
-			gfx_render_text(&t, 0.0f, 0, sjis, &ts, true);
+			gfx_render_text(&t, 0.0f, 0, sjis, &ts, false);
 			free(sjis);
 			r = RECT(c->x, c->y, t.w, t.h);
 			gfx_render_texture(&t, &r);

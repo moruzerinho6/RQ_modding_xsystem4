@@ -26,11 +26,13 @@ int rq_hud_tick(void);
 void rq_hud_draw(void);
 int rq_hud_block_mouse(void);
 int rq_dungeon_active(void);
+int rq_dungeon_exploring(void);
 void rq_hud_bind_lua(struct lua_State *L);
 struct lua_State *rq_lua(void);
 
 int rq_lua_on_frame(struct lua_State *L);
 int rq_lua_dungeon_active(struct lua_State *L);
+int rq_lua_dungeon_exploring(struct lua_State *L);
 int rq_lua_input_mouse(struct lua_State *L);
 int rq_lua_input_key(struct lua_State *L);
 int rq_lua_hud_rect(struct lua_State *L);
