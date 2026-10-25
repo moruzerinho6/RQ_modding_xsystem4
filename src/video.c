@@ -67,6 +67,10 @@ static struct shader default_shader;
 
 static GLuint main_surface_fb;
 static struct texture main_surface;
+/* One FBO for offscreen blits. CopyUseAMapBorder/AddDA used to
+ * glGen/Check/Delete a framebuffer per glyph (~40µs × hundreds). */
+static GLuint blit_fbo;
+static GLuint blit_attached_tex;
 static struct texture *view = &main_surface;
 static GLint max_texture_size;
 static SDL_Color clear_color = { 0, 0, 0, 255 };
@@ -281,6 +285,11 @@ int gfx_init(void)
 
 void gfx_fini(void)
 {
+	if (blit_fbo) {
+		glDeleteFramebuffers(1, &blit_fbo);
+		blit_fbo = 0;
+		blit_attached_tex = 0;
+	}
 	glDeleteProgram(default_shader.program);
 	SDL_DestroyWindow(sdl.window);
 	SDL_FreeFormat(sdl.format);
@@ -681,28 +690,33 @@ void gfx_copy_main_surface(struct texture *dst)
 
 void gfx_delete_texture(struct texture *t)
 {
-	if (t->handle)
+	if (t->handle) {
+		if (blit_attached_tex == t->handle)
+			blit_attached_tex = 0;
 		glDeleteTextures(1, &t->handle);
+	}
 	t->handle = 0;
 }
 
 GLuint gfx_set_framebuffer(GLenum target, Texture *t, int x, int y, int w, int h)
 {
-	GLuint fbo;
-	glGenFramebuffers(1, &fbo);
-	glBindFramebuffer(target, fbo);
-	glFramebufferTexture2D(target, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->handle, 0);
-	glViewport(x, y, w, h);
+	if (!blit_fbo)
+		glGenFramebuffers(1, &blit_fbo);
 
-	if (glCheckFramebufferStatus(target) != GL_FRAMEBUFFER_COMPLETE)
-		ERROR("Incomplete framebuffer");
-	return fbo;
+	glBindFramebuffer(target, blit_fbo);
+	if (blit_attached_tex != t->handle) {
+		glFramebufferTexture2D(target, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->handle, 0);
+		if (glCheckFramebufferStatus(target) != GL_FRAMEBUFFER_COMPLETE)
+			ERROR("Incomplete framebuffer");
+		blit_attached_tex = t->handle;
+	}
+	glViewport(x, y, w, h);
+	return blit_fbo;
 }
 
-void gfx_reset_framebuffer(GLenum target, GLuint fbo)
+void gfx_reset_framebuffer(GLenum target, possibly_unused GLuint fbo)
 {
 	glBindFramebuffer(target, main_surface_fb);
-	glDeleteFramebuffers(1, &fbo);
 	glViewport(0, 0, sdl.w, sdl.h);
 }
 
