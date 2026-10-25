@@ -2383,6 +2383,9 @@ static void vm_execute(void)
 			VM_ERROR("Illegal instruction pointer: 0x%08lX", instr_ptr);
 		}
 		opcode = get_opcode(instr_ptr);
+#ifdef RQ_PROFILE
+		rq_prof_note_vmop(opcode);
+#endif
 		opcode = execute_instruction(opcode);
 		instr_ptr += instructions[opcode].ip_inc;
 	}

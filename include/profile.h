@@ -33,6 +33,7 @@ void rq_prof_hll_end(const char *lib, const char *fn);
 void rq_prof_hll_add(const char *lib, const char *fn, double elapsed_ms);
 void rq_prof_note_update_split(double events_ms, double plugin_ms, double scene_ms,
 			      double other_ms, int dirty, int nspr);
+void rq_prof_note_vmop(unsigned opcode);
 void vm_prof_ain_stack(char *buf, size_t n);
 
 #else
@@ -72,6 +73,10 @@ static inline void rq_prof_note_update_split(double events_ms, double plugin_ms,
 	(void)other_ms;
 	(void)dirty;
 	(void)nspr;
+}
+static inline void rq_prof_note_vmop(unsigned opcode)
+{
+	(void)opcode;
 }
 static inline void vm_prof_ain_stack(char *buf, size_t n)
 {

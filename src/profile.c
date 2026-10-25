@@ -17,6 +17,7 @@
 
 #include "profile.h"
 #include "gfx/font.h"
+#include "system4/instructions.h"
 
 #define RQ_PROF_SLOW_MS 50.0
 #define RQ_HLL_CAP 1024
@@ -70,6 +71,9 @@ static double upd_other_ms;
 static uint32_t upd_n;
 static uint32_t upd_dirty;
 static int upd_nspr;
+
+static uint32_t n_vmop;
+static uint32_t vmop_n[NR_OPCODES];
 
 static double ticks_to_ms(uint64_t ticks)
 {
@@ -134,6 +138,8 @@ static void reset_accum(void)
 	upd_n = 0;
 	upd_dirty = 0;
 	upd_nspr = 0;
+	n_vmop = 0;
+	memset(vmop_n, 0, sizeof(vmop_n));
 }
 
 static void resolve_path(void)
@@ -267,10 +273,9 @@ static void write_hll_breakdown(double leftover_other, const char *stack)
 	qsort(ptrs, (size_t)n, sizeof(ptrs[0]), hll_ptr_cmp);
 
 	int written = 0;
-	for (int i = 0; i < n && written < 32; i++) {
-		bool split = ptrs[i]->fn && !strncmp(ptrs[i]->fn, "Update_", 7);
-		if (ptrs[i]->ms < 0.25 && written > 0 && !split)
-			break;
+	for (int i = 0; i < n && written < 64; i++) {
+		if (ptrs[i]->n == 0 && ptrs[i]->ms <= 0)
+			continue;
 		fprintf(hll_log, "%.3f,", now_t_ms());
 		csv_quote(hll_log, ptrs[i]->name);
 		fprintf(hll_log, ",%.3f,%u,", ptrs[i]->ms, ptrs[i]->n);
@@ -326,6 +331,7 @@ void rq_prof_init(void)
 			hll_path, RQ_PROF_SLOW_MS);
 	fprintf(stderr, "[rq-prof] text-sprite cache on (CSV tc_hit/skip/miss/entries; leftover hll text-cache row)\n");
 	fprintf(stderr, "[rq-prof] Chipmunk Update split on leftover HLL (Update_events/plugin/scene/other + Update_split row)\n");
+	fprintf(stderr, "[rq-prof] leftover HLL dumps all calls this frame; vm-ops row names top AIN opcodes\n");
 }
 
 void rq_prof_fini(void)
@@ -453,6 +459,13 @@ void rq_prof_note_update_split(double events_ms, double plugin_ms, double scene_
 	upd_nspr = nspr;
 }
 
+void rq_prof_note_vmop(unsigned opcode)
+{
+	n_vmop++;
+	if (opcode < NR_OPCODES)
+		vmop_n[opcode]++;
+}
+
 void rq_prof_frame(void)
 {
 	if (!inited)
@@ -536,6 +549,43 @@ void rq_prof_frame(void)
 					upd_events_ms + upd_plugin_ms + upd_scene_ms + upd_other_ms,
 					upd_n);
 				csv_quote(hll_log, upd_stack);
+				fputc('\n', hll_log);
+			}
+			{
+				char vm_stack[384];
+				int off = snprintf(vm_stack, sizeof(vm_stack), "n_vmop=%u n_hll=%u",
+						   n_vmop, n_hll);
+				uint32_t peeled[8];
+				int n_peeled = 0;
+				for (int k = 0; k < 8 && off > 0 && off < (int)sizeof(vm_stack) - 8; k++) {
+					unsigned best_op = NR_OPCODES;
+					uint32_t best_n = 0;
+					for (unsigned op = 0; op < NR_OPCODES; op++) {
+						if (vmop_n[op] <= best_n)
+							continue;
+						int skip = 0;
+						for (int p = 0; p < n_peeled; p++) {
+							if (peeled[p] == op) {
+								skip = 1;
+								break;
+							}
+						}
+						if (skip)
+							continue;
+						best_n = vmop_n[op];
+						best_op = op;
+					}
+					if (best_n == 0 || best_op >= NR_OPCODES)
+						break;
+					peeled[n_peeled++] = best_op;
+					const char *nm = instructions[best_op].name;
+					off += snprintf(vm_stack + off, sizeof(vm_stack) - (size_t)off,
+							" %s=%u", nm ? nm : "?", best_n);
+				}
+				fprintf(hll_log, "%.3f,", now_t_ms());
+				csv_quote(hll_log, "vm-ops");
+				fprintf(hll_log, ",0.000,%u,", n_vmop);
+				csv_quote(hll_log, vm_stack);
 				fputc('\n', hll_log);
 			}
 			fflush(hll_log);
