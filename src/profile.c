@@ -75,6 +75,27 @@ static int upd_nspr;
 static uint32_t n_vmop;
 static uint32_t vmop_n[NR_OPCODES];
 
+#define RQ_AIN_CAP 2048
+#define RQ_AIN_NEST 128
+
+struct rq_ain_acc {
+	int fno;
+	double ms;
+	uint32_t n;
+	bool used;
+};
+
+struct rq_ain_frame {
+	int fno;
+	uint64_t t0;
+};
+
+static struct rq_ain_acc ain_tab[RQ_AIN_CAP];
+static int ain_used_idx[RQ_AIN_CAP];
+static int n_ain_used;
+static struct rq_ain_frame ain_frame[RQ_AIN_NEST];
+static int ain_depth;
+
 static double ticks_to_ms(uint64_t ticks)
 {
 	if (!freq)
@@ -140,6 +161,11 @@ static void reset_accum(void)
 	upd_nspr = 0;
 	n_vmop = 0;
 	memset(vmop_n, 0, sizeof(vmop_n));
+	for (int i = 0; i < n_ain_used; i++)
+		ain_tab[ain_used_idx[i]].used = false;
+	n_ain_used = 0;
+	if (ain_depth > 0 && ain_depth <= RQ_AIN_NEST)
+		ain_frame[ain_depth - 1].t0 = SDL_GetPerformanceCounter();
 }
 
 static void resolve_path(void)
@@ -332,6 +358,7 @@ void rq_prof_init(void)
 	fprintf(stderr, "[rq-prof] text-sprite cache on (CSV tc_hit/skip/miss/entries; leftover hll text-cache row)\n");
 	fprintf(stderr, "[rq-prof] Chipmunk Update split on leftover HLL (Update_events/plugin/scene/other + Update_split row)\n");
 	fprintf(stderr, "[rq-prof] leftover HLL dumps all calls this frame; vm-ops row names top AIN opcodes\n");
+	fprintf(stderr, "[rq-prof] leftover ain-fn rows: exclusive AIN function time (not a JIT)\n");
 }
 
 void rq_prof_fini(void)
@@ -466,6 +493,101 @@ void rq_prof_note_vmop(unsigned opcode)
 		vmop_n[opcode]++;
 }
 
+static unsigned ain_hash(int fno)
+{
+	return (unsigned)((unsigned)fno * 2654435761u) & (RQ_AIN_CAP - 1);
+}
+
+static struct rq_ain_acc *ain_slot(int fno)
+{
+	unsigned i = ain_hash(fno);
+	for (unsigned n = 0; n < RQ_AIN_CAP; n++) {
+		struct rq_ain_acc *s = &ain_tab[i];
+		if (!s->used) {
+			s->fno = fno;
+			s->ms = 0;
+			s->n = 0;
+			s->used = true;
+			if (n_ain_used < RQ_AIN_CAP)
+				ain_used_idx[n_ain_used++] = (int)i;
+			return s;
+		}
+		if (s->fno == fno)
+			return s;
+		i = (i + 1) & (RQ_AIN_CAP - 1);
+	}
+	return NULL;
+}
+
+static void ain_add(int fno, double elapsed_ms, uint32_t calls)
+{
+	if (elapsed_ms < 0)
+		elapsed_ms = 0;
+	struct rq_ain_acc *s = ain_slot(fno);
+	if (!s)
+		return;
+	s->ms += elapsed_ms;
+	s->n += calls;
+}
+
+static void ain_flush_current(void)
+{
+	if (ain_depth <= 0 || ain_depth > RQ_AIN_NEST)
+		return;
+	uint64_t now = SDL_GetPerformanceCounter();
+	struct rq_ain_frame *fr = &ain_frame[ain_depth - 1];
+	ain_add(fr->fno, ticks_to_ms(now - fr->t0), 0);
+	fr->t0 = now;
+}
+
+void rq_prof_ain_enter(int fno)
+{
+	if (!inited)
+		rq_prof_init();
+	uint64_t now = SDL_GetPerformanceCounter();
+	if (ain_depth > 0 && ain_depth <= RQ_AIN_NEST) {
+		struct rq_ain_frame *parent = &ain_frame[ain_depth - 1];
+		ain_add(parent->fno, ticks_to_ms(now - parent->t0), 0);
+	}
+	if (ain_depth < RQ_AIN_NEST) {
+		ain_frame[ain_depth].fno = fno;
+		ain_frame[ain_depth].t0 = now;
+	}
+	ain_depth++;
+	ain_add(fno, 0, 1);
+}
+
+void rq_prof_ain_leave(void)
+{
+	if (ain_depth <= 0)
+		return;
+	uint64_t now = SDL_GetPerformanceCounter();
+	ain_depth--;
+	if (ain_depth < RQ_AIN_NEST) {
+		struct rq_ain_frame *fr = &ain_frame[ain_depth];
+		ain_add(fr->fno, ticks_to_ms(now - fr->t0), 0);
+	}
+	if (ain_depth > 0 && ain_depth <= RQ_AIN_NEST)
+		ain_frame[ain_depth - 1].t0 = now;
+}
+
+void rq_prof_ain_unwind(void)
+{
+	while (ain_depth > 0)
+		rq_prof_ain_leave();
+}
+
+static int ain_ptr_cmp(const void *a, const void *b)
+{
+	const struct rq_ain_acc *x = *(const struct rq_ain_acc *const *)a;
+	const struct rq_ain_acc *y = *(const struct rq_ain_acc *const *)b;
+	if (y->ms > x->ms)
+		return 1;
+	if (y->ms < x->ms)
+		return -1;
+	return 0;
+}
+
 void rq_prof_frame(void)
 {
 	if (!inited)
@@ -587,6 +709,27 @@ void rq_prof_frame(void)
 				fprintf(hll_log, ",0.000,%u,", n_vmop);
 				csv_quote(hll_log, vm_stack);
 				fputc('\n', hll_log);
+			}
+			ain_flush_current();
+			if (n_ain_used > 0) {
+				struct rq_ain_acc *aptrs[RQ_AIN_CAP];
+				int na = 0;
+				for (int i = 0; i < n_ain_used; i++)
+					aptrs[na++] = &ain_tab[ain_used_idx[i]];
+				qsort(aptrs, (size_t)na, sizeof(aptrs[0]), ain_ptr_cmp);
+				int written = 0;
+				for (int i = 0; i < na && written < 16; i++) {
+					if (aptrs[i]->ms <= 0 && aptrs[i]->n == 0)
+						continue;
+					char fname[192];
+					vm_prof_ain_fname(aptrs[i]->fno, fname, sizeof(fname));
+					fprintf(hll_log, "%.3f,", now_t_ms());
+					csv_quote(hll_log, "ain-fn");
+					fprintf(hll_log, ",%.3f,%u,", aptrs[i]->ms, aptrs[i]->n);
+					csv_quote(hll_log, fname[0] ? fname : "?");
+					fputc('\n', hll_log);
+					written++;
+				}
 			}
 			fflush(hll_log);
 		}

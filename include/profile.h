@@ -34,7 +34,11 @@ void rq_prof_hll_add(const char *lib, const char *fn, double elapsed_ms);
 void rq_prof_note_update_split(double events_ms, double plugin_ms, double scene_ms,
 			      double other_ms, int dirty, int nspr);
 void rq_prof_note_vmop(unsigned opcode);
+void rq_prof_ain_enter(int fno);
+void rq_prof_ain_leave(void);
+void rq_prof_ain_unwind(void);
 void vm_prof_ain_stack(char *buf, size_t n);
+void vm_prof_ain_fname(int fno, char *buf, size_t n);
 
 #else
 
@@ -78,8 +82,20 @@ static inline void rq_prof_note_vmop(unsigned opcode)
 {
 	(void)opcode;
 }
+static inline void rq_prof_ain_enter(int fno)
+{
+	(void)fno;
+}
+static inline void rq_prof_ain_leave(void) {}
+static inline void rq_prof_ain_unwind(void) {}
 static inline void vm_prof_ain_stack(char *buf, size_t n)
 {
+	if (buf && n)
+		buf[0] = '\0';
+}
+static inline void vm_prof_ain_fname(int fno, char *buf, size_t n)
+{
+	(void)fno;
 	if (buf && n)
 		buf[0] = '\0';
 }

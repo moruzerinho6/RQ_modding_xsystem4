@@ -16,6 +16,7 @@
 
 #define VM_PRIVATE
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -336,6 +337,9 @@ static void unref_call_frame(struct function_call *frame)
 
 static void scenario_jump(int address)
 {
+#ifdef RQ_PROFILE
+	rq_prof_ain_unwind();
+#endif
 	// flush call stack
 	for (int i = call_stack_ptr - 1; i >= 0; i--) {
 		unref_call_frame(&call_stack[i]);
@@ -347,6 +351,9 @@ static void scenario_jump(int address)
 static void scenario_call(int slot)
 {
 	int fno = heap[slot].page->index;
+#ifdef RQ_PROFILE
+	rq_prof_ain_unwind();
+#endif
 	// flush call stack
 	for (int i = call_stack_ptr - 1; i >= 0; i--) {
 		unref_call_frame(&call_stack[i]);
@@ -360,6 +367,9 @@ static void scenario_call(int slot)
 	};
 	call_stack_ptr = 1;
 	instr_ptr = ain->functions[fno].address;
+#ifdef RQ_PROFILE
+	rq_prof_ain_enter(fno);
+#endif
 }
 
 /*
@@ -371,6 +381,9 @@ static void scenario_call(int slot)
  */
 static int _function_call(int fno, int return_address)
 {
+#ifdef RQ_PROFILE
+	rq_prof_ain_enter(fno);
+#endif
 	struct ain_function *f = &ain->functions[fno];
 	int slot = heap_alloc_slot(VM_PAGE);
 	heap_set_page(slot, alloc_page(LOCAL_PAGE, fno, f->nr_vars));
@@ -496,6 +509,9 @@ static void function_return(void)
 	unref_call_frame(&call_stack[call_stack_ptr-1]);
 	instr_ptr = call_stack[call_stack_ptr-1].return_address;
 	call_stack_ptr--;
+#ifdef RQ_PROFILE
+	rq_prof_ain_leave();
+#endif
 }
 
 static const SDL_MessageBoxButtonData ok_cancel_buttons[] = {
@@ -2448,6 +2464,9 @@ int vm_execute_ain(struct ain *program)
 	}
 	stack_ptr = 0;
 	call_stack_ptr = 0;
+#ifdef RQ_PROFILE
+	rq_prof_ain_unwind();
+#endif
 
 	heap_init();
 	init_libraries();
@@ -2603,6 +2622,21 @@ void vm_prof_ain_stack(char *buf, size_t n)
 		buf[used] = '\0';
 		free(utf);
 	}
+}
+
+void vm_prof_ain_fname(int fno, char *buf, size_t n)
+{
+	if (!buf || n == 0)
+		return;
+	buf[0] = '\0';
+	if (!ain || fno < 0 || fno >= ain->nr_functions)
+		return;
+	const char *sjis = ain->functions[fno].name;
+	if (!sjis || !sjis[0])
+		return;
+	char *utf = sjis2utf(sjis, 0);
+	snprintf(buf, n, "%s", utf ? utf : sjis);
+	free(utf);
 }
 #endif
 
