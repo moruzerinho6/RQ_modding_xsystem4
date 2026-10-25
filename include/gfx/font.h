@@ -17,6 +17,7 @@
 #ifndef SYSTEM4_FONT_H
 #define SYSTEM4_FONT_H
 
+#include <stdint.h>
 #include "system4.h"
 #include "gfx/gfx.h"
 
@@ -161,6 +162,11 @@ float _gfx_render_text(Texture *dst, char *msg, struct text_render_metrics *tm);
 int gfx_render_text(Texture *dst, float x, int y, char *msg, struct text_style *ts, bool blend);
 float gfx_render_textf(Texture *dst, float x, int y, char *msg, struct text_style *ts, bool blend);
 void gfx_render_dash_text(Texture *dst, struct text_style *ts);
+
+/* Styled text-sprite cache (SP_SetTextSprite / cell-sized gfx_render_text). */
+bool gfx_text_cache_try_sprite(int sp_no, Texture *dst, const char *msg, struct text_style *ts, bool blend, bool reused);
+void gfx_text_cache_store_sprite(int sp_no, Texture *dst, const char *msg, struct text_style *ts, bool blend, float advance);
+void gfx_text_cache_stats(uint64_t *hits, uint64_t *misses, uint64_t *skips, unsigned *entries);
 void gfx_draw_text_to_amap(Texture *dst, int x, int y, char *text);
 void gfx_draw_text_to_pmap(Texture *dst, int x, int y, char *text);
 float gfx_size_char_unstyled(struct text_style *ts, const char *ch);

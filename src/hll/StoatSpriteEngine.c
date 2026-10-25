@@ -115,12 +115,35 @@ bool StoatSpriteEngine_SP_SetTextSprite(int sp_no, struct string *text)
 	extract_sjis_char(text->text, s);
 	int w = ceilf(gfx_size_char(&text_sprite_ts, s));
 	int h = text_sprite_ts.size;
+	if (w < 1)
+		w = 1;
+	if (h < 1)
+		h = 1;
 	// XXX: System40.exe lies about the height of half-width characters.
 	//      E.g. a size 64 letter "H" is reported as 32 pixels tall.
 	//      Probably doesn't matter...?
-	struct sact_sprite *sp = sact_create_sprite(sp_no, w, h, 0, 0, 0, 0);
-	sprite_get_texture(sp); // XXX: force initialization of texture
-	gfx_render_text(&sp->texture, 0.0f, 0, s, &text_sprite_ts, false);
+	struct sact_sprite *sp = sact_get_sprite(sp_no);
+	if (!sp)
+		return false;
+
+	bool reused = sp->texture.handle
+		&& sp->rect.w == w
+		&& sp->rect.h == h
+		&& sp->sp.has_alpha;
+	if (!reused) {
+		sp = sact_create_sprite(sp_no, w, h, 0, 0, 0, 0);
+		if (!sp)
+			return false;
+		sprite_get_texture(sp);
+	}
+
+	if (!gfx_text_cache_try_sprite(sp_no, sprite_get_texture(sp), s, &text_sprite_ts, false, reused)) {
+		if (reused)
+			gfx_fill_with_alpha(&sp->texture, 0, 0, w, h, 0, 0, 0, 0);
+		/* Rasterize via gfx_render_textf so the cell cache is stored once. */
+		float adv = gfx_render_textf(&sp->texture, 0.0f, 0, s, &text_sprite_ts, false);
+		gfx_text_cache_store_sprite(sp_no, &sp->texture, s, &text_sprite_ts, false, adv);
+	}
 	sprite_dirty(sp);
 	return true;
 }

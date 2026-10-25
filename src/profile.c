@@ -16,6 +16,7 @@
 #include <SDL.h>
 
 #include "profile.h"
+#include "gfx/font.h"
 
 #define RQ_PROF_SLOW_MS 50.0
 #define RQ_HLL_CAP 1024
@@ -306,6 +307,7 @@ void rq_prof_init(void)
 	if (hll_log)
 		fprintf(stderr, "[rq-prof] HLL breakdown %s (leftover > %.0f ms)\n",
 			hll_path, RQ_PROF_SLOW_MS);
+	fprintf(stderr, "[rq-prof] text-sprite cache on (hit/skip/miss in 60-frame lines)\n");
 }
 
 void rq_prof_fini(void)
@@ -325,7 +327,16 @@ void rq_prof_fini(void)
 	fflush(out);
 	fclose(out);
 	out = NULL;
-	fprintf(stderr, "[rq-prof] closed %s (%u frames)\n", out_path, frame_no);
+	{
+		uint64_t hits = 0, misses = 0, skips = 0;
+		unsigned entries = 0;
+		gfx_text_cache_stats(&hits, &misses, &skips, &entries);
+		fprintf(stderr,
+			"[rq-prof] closed %s (%u frames) text-cache hit=%llu skip=%llu miss=%llu entries=%u\n",
+			out_path, frame_no,
+			(unsigned long long)hits, (unsigned long long)skips,
+			(unsigned long long)misses, entries);
+	}
 }
 
 void rq_prof_begin(enum rq_prof_bucket b)
@@ -487,12 +498,17 @@ void rq_prof_frame(void)
 			fflush(out);
 		if ((frame_no % 60) == 0) {
 			double fps = frame_ms > 0.1 ? 1000.0 / frame_ms : 0;
+			uint64_t hits = 0, misses = 0, skips = 0;
+			unsigned entries = 0;
+			gfx_text_cache_stats(&hits, &misses, &skips, &entries);
 			fprintf(stderr,
-				"[rq-prof] frame=%u fps=%.1f frame_ms=%.2f leftover_other=%.2f hll_other=%.2f script=%.2f top=%s:%.2f ain=%s\n",
+				"[rq-prof] frame=%u fps=%.1f frame_ms=%.2f leftover_other=%.2f hll_other=%.2f script=%.2f top=%s:%.2f ain=%s text-cache hit=%llu skip=%llu miss=%llu entries=%u\n",
 				frame_no, fps, frame_ms, leftover_other_ms, hll_other_ms, script_ms,
 				top_name[0] ? top_name : "-",
 				top_ms,
-				ain_name[0] ? ain_name : "-");
+				ain_name[0] ? ain_name : "-",
+				(unsigned long long)hits, (unsigned long long)skips,
+				(unsigned long long)misses, entries);
 		}
 	}
 	reset_accum();
