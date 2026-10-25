@@ -1,3 +1,4 @@
 option('debugger', type : 'feature', value : 'auto')
 option('opengles', type : 'feature', value : 'auto', description : 'Target OpenGL ES 3.0')
-option('profile', type : 'boolean', value : false, description : 'CSV frame profiler (hub lag captures)')
+option('profile', type : 'boolean', value : false, description : 'CSV frame profiler always-on (hub lag captures)')
+option('modloader', type : 'boolean', value : false, description : 'Load mods/*.lua at ain_open; profilers runtime-gated')

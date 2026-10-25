@@ -32,6 +32,19 @@ struct rq_hll_acc {
 	bool used;
 };
 
+#ifdef RQ_PROFILE_FORCE
+struct rq_prof_runtime g_rq_prof = {1, 1, 1, 1, 1, 1, 1};
+#else
+struct rq_prof_runtime g_rq_prof = {0};
+#endif
+
+void rq_prof_set_runtime(const struct rq_prof_runtime *rt)
+{
+	if (!rt)
+		return;
+	g_rq_prof = *rt;
+}
+
 static FILE *out;
 static FILE *ain_log;
 static FILE *hll_log;
@@ -314,51 +327,66 @@ static void write_hll_breakdown(double leftover_other, const char *stack)
 
 void rq_prof_init(void)
 {
+	int want_hll_log;
 	if (inited)
 		return;
+	if (!rq_prof_any()) {
+		inited = true;
+		return;
+	}
 	freq = SDL_GetPerformanceFrequency();
 	t_start = SDL_GetPerformanceCounter();
 	t_last_frame = t_start;
 	resolve_path();
-	out = fopen(out_path, "w");
-	if (!out) {
-		fprintf(stderr, "[rq-prof] could not open %s\n", out_path);
-		return;
+	if (g_rq_prof.csv) {
+		out = fopen(out_path, "w");
+		if (!out) {
+			fprintf(stderr, "[rq-prof] could not open %s\n", out_path);
+		} else {
+			fprintf(out,
+				"frame,t_ms,frame_ms,input_ms,plugin_ms,scene_ms,sprite_ms,"
+				"dungeon_ms,tapir_ms,swap_ms,sleep_ms,n_sleep,sleep_req_ms,"
+				"leftover_ms,leftover_other_ms,script_ms,hll_ms,hll_other_ms,n_hll,"
+				"chipmunk_sleep_ms,n_sprite,n_dungeon,n_tapir,vsync,ain,top_hll,top_hll_ms,"
+				"tc_hit,tc_skip,tc_miss,tc_entries\n");
+			fflush(out);
+			fprintf(stderr, "[rq-prof] writing %s (F12 pauses)\n", out_path);
+		}
 	}
-	fprintf(out,
-		"frame,t_ms,frame_ms,input_ms,plugin_ms,scene_ms,sprite_ms,"
-		"dungeon_ms,tapir_ms,swap_ms,sleep_ms,n_sleep,sleep_req_ms,"
-		"leftover_ms,leftover_other_ms,script_ms,hll_ms,hll_other_ms,n_hll,"
-		"chipmunk_sleep_ms,n_sprite,n_dungeon,n_tapir,vsync,ain,top_hll,top_hll_ms,"
-		"tc_hit,tc_skip,tc_miss,tc_entries\n");
-	fflush(out);
-	ain_log = fopen(ain_path, "w");
-	if (ain_log) {
-		fprintf(ain_log, "t_ms,kind,elapsed_ms,requested_ms,ain_stack,hll,hll_ms\n");
-		fflush(ain_log);
-	} else {
-		fprintf(stderr, "[rq-prof] could not open %s\n", ain_path);
+	if (g_rq_prof.leftover_ain) {
+		ain_log = fopen(ain_path, "w");
+		if (ain_log) {
+			fprintf(ain_log, "t_ms,kind,elapsed_ms,requested_ms,ain_stack,hll,hll_ms\n");
+			fflush(ain_log);
+			fprintf(stderr, "[rq-prof] slow AIN log %s (sleep/leftover > %.0f ms)\n",
+				ain_path, RQ_PROF_SLOW_MS);
+		} else {
+			fprintf(stderr, "[rq-prof] could not open %s\n", ain_path);
+		}
 	}
-	hll_log = fopen(hll_path, "w");
-	if (hll_log) {
-		fprintf(hll_log, "t_ms,hll,ms,n,ain_stack\n");
-		fflush(hll_log);
-	} else {
-		fprintf(stderr, "[rq-prof] could not open %s\n", hll_path);
+	want_hll_log = g_rq_prof.hll || g_rq_prof.update_split || g_rq_prof.vm_ops
+		|| g_rq_prof.ain_fn || g_rq_prof.text_cache;
+	if (want_hll_log) {
+		hll_log = fopen(hll_path, "w");
+		if (hll_log) {
+			fprintf(hll_log, "t_ms,hll,ms,n,ain_stack\n");
+			fflush(hll_log);
+			fprintf(stderr, "[rq-prof] HLL breakdown %s (leftover > %.0f ms)\n",
+				hll_path, RQ_PROF_SLOW_MS);
+		} else {
+			fprintf(stderr, "[rq-prof] could not open %s\n", hll_path);
+		}
 	}
 	inited = true;
 	atexit(rq_prof_fini);
-	fprintf(stderr, "[rq-prof] writing %s (F12 pauses)\n", out_path);
-	if (ain_log)
-		fprintf(stderr, "[rq-prof] slow AIN log %s (sleep/leftover > %.0f ms)\n",
-			ain_path, RQ_PROF_SLOW_MS);
-	if (hll_log)
-		fprintf(stderr, "[rq-prof] HLL breakdown %s (leftover > %.0f ms)\n",
-			hll_path, RQ_PROF_SLOW_MS);
-	fprintf(stderr, "[rq-prof] text-sprite cache on (CSV tc_hit/skip/miss/entries; leftover hll text-cache row)\n");
-	fprintf(stderr, "[rq-prof] Chipmunk Update split on leftover HLL (Update_events/plugin/scene/other + Update_split row)\n");
-	fprintf(stderr, "[rq-prof] leftover HLL dumps all calls this frame; vm-ops row names top AIN opcodes\n");
-	fprintf(stderr, "[rq-prof] leftover ain-fn rows: exclusive AIN function time (not a JIT)\n");
+	if (g_rq_prof.text_cache)
+		fprintf(stderr, "[rq-prof] text-sprite cache counters on\n");
+	if (g_rq_prof.update_split)
+		fprintf(stderr, "[rq-prof] Chipmunk Update split on leftover HLL\n");
+	if (g_rq_prof.vm_ops)
+		fprintf(stderr, "[rq-prof] leftover vm-ops row on\n");
+	if (g_rq_prof.ain_fn)
+		fprintf(stderr, "[rq-prof] leftover ain-fn rows on (exclusive AIN time; not a JIT)\n");
 }
 
 void rq_prof_fini(void)
@@ -390,21 +418,21 @@ void rq_prof_fini(void)
 	}
 }
 
-void rq_prof_begin(enum rq_prof_bucket b)
+void rq_prof_begin_impl(enum rq_prof_bucket b)
 {
 	if ((unsigned)b >= RQ_PROF_NR)
 		return;
 	t0[b] = SDL_GetPerformanceCounter();
 }
 
-void rq_prof_end(enum rq_prof_bucket b)
+void rq_prof_end_impl(enum rq_prof_bucket b)
 {
 	if ((unsigned)b >= RQ_PROF_NR)
 		return;
 	accum[b] += SDL_GetPerformanceCounter() - t0[b];
 }
 
-void rq_prof_count(enum rq_prof_bucket b)
+void rq_prof_count_impl(enum rq_prof_bucket b)
 {
 	if ((unsigned)b >= RQ_PROF_NR)
 		return;
@@ -413,11 +441,13 @@ void rq_prof_count(enum rq_prof_bucket b)
 
 void rq_prof_toggle_pause(void)
 {
+	if (!rq_prof_any())
+		return;
 	paused = !paused;
 	fprintf(stderr, "[rq-prof] %s\n", paused ? "paused" : "recording");
 }
 
-void rq_prof_note_sleep(int requested_ms, double elapsed_ms, const char *ain_stack)
+void rq_prof_note_sleep_impl(int requested_ms, double elapsed_ms, const char *ain_stack)
 {
 	if (!inited)
 		rq_prof_init();
@@ -436,7 +466,7 @@ void rq_prof_note_sleep(int requested_ms, double elapsed_ms, const char *ain_sta
 		ain_log_event("sleep", elapsed_ms, (double)requested_ms, ain_stack, "", 0);
 }
 
-void rq_prof_hll_begin(void)
+void rq_prof_hll_begin_impl(void)
 {
 	if (!inited)
 		rq_prof_init();
@@ -445,7 +475,7 @@ void rq_prof_hll_begin(void)
 	hll_depth++;
 }
 
-void rq_prof_hll_end(const char *lib, const char *fn)
+void rq_prof_hll_end_impl(const char *lib, const char *fn)
 {
 	if (hll_depth <= 0)
 		return;
@@ -456,15 +486,15 @@ void rq_prof_hll_end(const char *lib, const char *fn)
 	hll_note(lib, fn, elapsed);
 }
 
-void rq_prof_hll_add(const char *lib, const char *fn, double elapsed_ms)
+void rq_prof_hll_add_impl(const char *lib, const char *fn, double elapsed_ms)
 {
 	if (!inited)
 		rq_prof_init();
 	hll_note(lib, fn, elapsed_ms);
 }
 
-void rq_prof_note_update_split(double events_ms, double plugin_ms, double scene_ms,
-			      double other_ms, int dirty, int nspr)
+void rq_prof_note_update_split_impl(double events_ms, double plugin_ms, double scene_ms,
+				  double other_ms, int dirty, int nspr)
 {
 	if (!inited)
 		rq_prof_init();
@@ -486,7 +516,7 @@ void rq_prof_note_update_split(double events_ms, double plugin_ms, double scene_
 	upd_nspr = nspr;
 }
 
-void rq_prof_note_vmop(unsigned opcode)
+void rq_prof_note_vmop_impl(unsigned opcode)
 {
 	n_vmop++;
 	if (opcode < NR_OPCODES)
@@ -540,7 +570,7 @@ static void ain_flush_current(void)
 	fr->t0 = now;
 }
 
-void rq_prof_ain_enter(int fno)
+void rq_prof_ain_enter_impl(int fno)
 {
 	if (!inited)
 		rq_prof_init();
@@ -557,7 +587,7 @@ void rq_prof_ain_enter(int fno)
 	ain_add(fno, 0, 1);
 }
 
-void rq_prof_ain_leave(void)
+void rq_prof_ain_leave_impl(void)
 {
 	if (ain_depth <= 0)
 		return;
@@ -571,10 +601,10 @@ void rq_prof_ain_leave(void)
 		ain_frame[ain_depth - 1].t0 = now;
 }
 
-void rq_prof_ain_unwind(void)
+void rq_prof_ain_unwind_impl(void)
 {
 	while (ain_depth > 0)
-		rq_prof_ain_leave();
+		rq_prof_ain_leave_impl();
 }
 
 static int ain_ptr_cmp(const void *a, const void *b)
@@ -588,11 +618,13 @@ static int ain_ptr_cmp(const void *a, const void *b)
 	return 0;
 }
 
-void rq_prof_frame(void)
+void rq_prof_frame_impl(void)
 {
+	if (!rq_prof_any())
+		return;
 	if (!inited)
 		rq_prof_init();
-	if (!out) {
+	if (!out && !ain_log && !hll_log) {
 		reset_accum();
 		return;
 	}
@@ -640,26 +672,31 @@ void rq_prof_frame(void)
 
 	uint64_t tc_hit = 0, tc_miss = 0, tc_skip = 0;
 	unsigned tc_entries = 0;
-	gfx_text_cache_take_frame(&tc_hit, &tc_miss, &tc_skip, &tc_entries);
+	if (g_rq_prof.csv || g_rq_prof.text_cache)
+		gfx_text_cache_take_frame(&tc_hit, &tc_miss, &tc_skip, &tc_entries);
 
 	if (leftover_other_ms > RQ_PROF_SLOW_MS) {
 		if (!stack[0])
 			vm_prof_ain_stack(stack, sizeof(stack));
-		ain_log_event("leftover", leftover_other_ms, 0, stack, top_name, top_ms);
-		write_hll_breakdown(leftover_other_ms, stack);
+		if (g_rq_prof.leftover_ain)
+			ain_log_event("leftover", leftover_other_ms, 0, stack, top_name, top_ms);
+		if (g_rq_prof.hll)
+			write_hll_breakdown(leftover_other_ms, stack);
 		if (hll_log && !paused) {
-			char tc_stack[192];
-			snprintf(tc_stack, sizeof(tc_stack),
-				 "hit=%llu skip=%llu miss=%llu entries=%u",
-				 (unsigned long long)tc_hit, (unsigned long long)tc_skip,
-				 (unsigned long long)tc_miss, tc_entries);
-			fprintf(hll_log, "%.3f,", now_t_ms());
-			csv_quote(hll_log, "text-cache");
-			fprintf(hll_log, ",0.000,%llu,",
-				(unsigned long long)(tc_hit + tc_skip + tc_miss));
-			csv_quote(hll_log, tc_stack);
-			fputc('\n', hll_log);
-			if (upd_n) {
+			if (g_rq_prof.text_cache) {
+				char tc_stack[192];
+				snprintf(tc_stack, sizeof(tc_stack),
+					 "hit=%llu skip=%llu miss=%llu entries=%u",
+					 (unsigned long long)tc_hit, (unsigned long long)tc_skip,
+					 (unsigned long long)tc_miss, tc_entries);
+				fprintf(hll_log, "%.3f,", now_t_ms());
+				csv_quote(hll_log, "text-cache");
+				fprintf(hll_log, ",0.000,%llu,",
+					(unsigned long long)(tc_hit + tc_skip + tc_miss));
+				csv_quote(hll_log, tc_stack);
+				fputc('\n', hll_log);
+			}
+			if (g_rq_prof.update_split && upd_n) {
 				char upd_stack[256];
 				snprintf(upd_stack, sizeof(upd_stack),
 					 "n=%u dirty=%u nspr=%d events=%.3f plugin=%.3f scene=%.3f other=%.3f",
@@ -673,7 +710,7 @@ void rq_prof_frame(void)
 				csv_quote(hll_log, upd_stack);
 				fputc('\n', hll_log);
 			}
-			{
+			if (g_rq_prof.vm_ops) {
 				char vm_stack[384];
 				int off = snprintf(vm_stack, sizeof(vm_stack), "n_vmop=%u n_hll=%u",
 						   n_vmop, n_hll);
@@ -710,32 +747,34 @@ void rq_prof_frame(void)
 				csv_quote(hll_log, vm_stack);
 				fputc('\n', hll_log);
 			}
-			ain_flush_current();
-			if (n_ain_used > 0) {
-				struct rq_ain_acc *aptrs[RQ_AIN_CAP];
-				int na = 0;
-				for (int i = 0; i < n_ain_used; i++)
-					aptrs[na++] = &ain_tab[ain_used_idx[i]];
-				qsort(aptrs, (size_t)na, sizeof(aptrs[0]), ain_ptr_cmp);
-				int written = 0;
-				for (int i = 0; i < na && written < 16; i++) {
-					if (aptrs[i]->ms <= 0 && aptrs[i]->n == 0)
-						continue;
-					char fname[192];
-					vm_prof_ain_fname(aptrs[i]->fno, fname, sizeof(fname));
-					fprintf(hll_log, "%.3f,", now_t_ms());
-					csv_quote(hll_log, "ain-fn");
-					fprintf(hll_log, ",%.3f,%u,", aptrs[i]->ms, aptrs[i]->n);
-					csv_quote(hll_log, fname[0] ? fname : "?");
-					fputc('\n', hll_log);
-					written++;
+			if (g_rq_prof.ain_fn) {
+				ain_flush_current();
+				if (n_ain_used > 0) {
+					struct rq_ain_acc *aptrs[RQ_AIN_CAP];
+					int na = 0;
+					for (int i = 0; i < n_ain_used; i++)
+						aptrs[na++] = &ain_tab[ain_used_idx[i]];
+					qsort(aptrs, (size_t)na, sizeof(aptrs[0]), ain_ptr_cmp);
+					int written = 0;
+					for (int i = 0; i < na && written < 16; i++) {
+						if (aptrs[i]->ms <= 0 && aptrs[i]->n == 0)
+							continue;
+						char fname[192];
+						vm_prof_ain_fname(aptrs[i]->fno, fname, sizeof(fname));
+						fprintf(hll_log, "%.3f,", now_t_ms());
+						csv_quote(hll_log, "ain-fn");
+						fprintf(hll_log, ",%.3f,%u,", aptrs[i]->ms, aptrs[i]->n);
+						csv_quote(hll_log, fname[0] ? fname : "?");
+						fputc('\n', hll_log);
+						written++;
+					}
 				}
 			}
 			fflush(hll_log);
 		}
 	}
 
-	if (!paused) {
+	if (!paused && out) {
 		int vsync = SDL_GL_GetSwapInterval();
 		fprintf(out,
 			"%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%u,%u,%u,%d,",

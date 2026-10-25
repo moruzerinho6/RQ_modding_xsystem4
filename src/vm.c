@@ -35,6 +35,7 @@
 
 #include "debugger.h"
 #include "input.h"
+#include "modloader.h"
 #include "profile.h"
 #include "savedata.h"
 #include "vm.h"
@@ -494,6 +495,7 @@ static void delegate_call(int dg_no, int return_address)
 void vm_call(int fno, int struct_page)
 {
 	size_t saved_ip = instr_ptr;
+	rq_mods_on_vm_call(fno, struct_page);
 	if (struct_page < 0) {
 		function_call(fno, VM_RETURN);
 	} else {
@@ -576,7 +578,7 @@ static void system_call(enum syscall_code code)
 	case SYS_MSGBOX: {
 		struct string *str = stack_peek_string(0);
 		char *utf = sjis2utf(str->text, str->size);
-		SDL_ShowSimpleMessageBox(0, "xsystem4", utf, NULL);
+		sys_show_simple_message_box(0, "xsystem4", utf);
 		free(utf);
 		// XXX: caller S_POPs
 		break;

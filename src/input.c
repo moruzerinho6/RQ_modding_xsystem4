@@ -214,6 +214,13 @@ bool key_is_down(enum sact_keycode code)
 	return key_state[code];
 }
 
+void key_set_state(int code, int down)
+{
+	if (code <= 0 || code >= VK_NR_KEYCODES)
+		return;
+	key_state[code] = down != 0;
+}
+
 void key_clear_flag(bool no_ctrl)
 {
 	for (int i = 0; i < VK_NR_KEYCODES; i++) {
@@ -245,6 +252,11 @@ void mouse_get_wheel(int *forward, int *back)
 {
 	*forward = wheel_dir > 0;
 	*back = wheel_dir < 0;
+}
+
+void mouse_set_wheel(int dir)
+{
+	wheel_dir = dir;
 }
 
 void mouse_clear_wheel(void)

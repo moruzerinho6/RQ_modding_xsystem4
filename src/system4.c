@@ -39,6 +39,7 @@
 #include "debugger.h"
 #include "gfx/gfx.h"
 #include "gfx/font.h"
+#include "modloader.h"
 #include "vm.h"
 
 #include "version.h"
@@ -443,12 +444,13 @@ enum {
 
 static void error_handler(const char *msg)
 {
-	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "xsystem4", msg, NULL);
+	sys_show_simple_message_box(SDL_MESSAGEBOX_ERROR, "xsystem4", msg);
 }
 
 int main(int argc, char *argv[])
 {
 	sys_error_handler = error_handler;
+	rq_mods_early_init();
 
 	char *ainfile;
 	int err = AIN_SUCCESS;

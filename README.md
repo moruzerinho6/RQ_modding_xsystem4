@@ -156,3 +156,15 @@ Alternatively, run xsystem4 from within the game directory,
 
 If you've installed xsystem4 into the game directory as described above, simply
 double-click `xsystem4.exe` to run the game.
+
+Rance Quest modding
+-------------------
+
+`meson -Dmodloader=true` compiles Lua 5.4.7 (MIT, `third_party/lua`) into the
+exe and loads `mods/*.lua` / `mods/<name>/init.lua` after `ain_open`. Default
+**off**. The player apply path turns it on (`rqmod\build-engine.ps1`).
+
+Frame/HLL/AIN profilers are compiled into that player binary and gated by
+`config.json` next to the exe (every extra layer defaults **off**). The
+separate `meson -Dprofile=true` tree still force-enables CSV for comparable
+hub captures. Do not enable `-Dmodloader` on the profile meson tree.

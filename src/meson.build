@@ -222,16 +222,39 @@ winsys = 'console'
 if get_option('buildtype').startswith('release')
     winsys = 'windows'
 endif
+
+exe_inc = [incdir]
+exe_link = []
+
 if get_option('profile')
-    add_project_arguments('-DRQ_PROFILE', language : 'c')
-    xsystem4 += 'profile.c'
+    add_project_arguments('-DRQ_PROFILE', '-DRQ_PROFILE_FORCE', language : 'c')
     winsys = 'console'
+elif get_option('modloader')
+    add_project_arguments('-DRQ_PROFILE', language : 'c')
+endif
+
+if get_option('profile') or get_option('modloader')
+    xsystem4 += 'profile.c'
+endif
+
+if get_option('modloader')
+    add_project_arguments('-DRQ_MODLOADER', language : 'c')
+    lua_inc = include_directories('../third_party/lua')
+    lua_lib = static_library('lua54',
+                             '../third_party/lua/onelua.c',
+                             c_args : ['-DMAKE_LIB', '-Wno-unused-parameter',
+                                       '-Wno-implicit-fallthrough'],
+                             include_directories : lua_inc)
+    xsystem4 += ['modloader.c', 'modloader_agent.c']
+    exe_inc += lua_inc
+    exe_link += lua_lib
 endif
 
 executable('xsystem4', xsystem4,
            dependencies : xsystem4_deps,
            c_args : ['-Wno-unused-parameter'],
            link_args : static_link_args,
-           include_directories : incdir,
+           link_with : exe_link,
+           include_directories : exe_inc,
            win_subsystem : winsys,
            install : true)

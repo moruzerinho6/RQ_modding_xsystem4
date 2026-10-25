@@ -216,29 +216,37 @@ static void sact_prof_update_split(uint64_t ev, uint64_t plug, uint64_t scn,
 int sact_Update(void)
 {
 #ifdef RQ_PROFILE
-	uint64_t t0 = SDL_GetPerformanceCounter();
-	uint64_t t1, t2, t3;
+	int split = g_rq_prof.update_split;
+	uint64_t t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+	if (split)
+		t0 = SDL_GetPerformanceCounter();
 #endif
 	handle_events();
 #ifdef RQ_PROFILE
-	t1 = SDL_GetPerformanceCounter();
+	if (split)
+		t1 = SDL_GetPerformanceCounter();
 #endif
 	sprite_call_plugins();
 #ifdef RQ_PROFILE
-	t2 = SDL_GetPerformanceCounter();
+	if (split)
+		t2 = SDL_GetPerformanceCounter();
 #endif
 	if (scene_is_dirty) {
 		scene_render();
 #ifdef RQ_PROFILE
-		t3 = SDL_GetPerformanceCounter();
-		sact_prof_update_split(t1 - t0, t2 - t1, t3 - t2, 0, 1);
+		if (split) {
+			t3 = SDL_GetPerformanceCounter();
+			sact_prof_update_split(t1 - t0, t2 - t1, t3 - t2, 0, 1);
+		}
 #endif
 		gfx_swap();
 		scene_is_dirty = false;
 	} else {
 #ifdef RQ_PROFILE
-		t3 = SDL_GetPerformanceCounter();
-		sact_prof_update_split(t1 - t0, t2 - t1, 0, t3 - t2, 0);
+		if (split) {
+			t3 = SDL_GetPerformanceCounter();
+			sact_prof_update_split(t1 - t0, t2 - t1, 0, t3 - t2, 0);
+		}
 #endif
 	}
 	return 1;

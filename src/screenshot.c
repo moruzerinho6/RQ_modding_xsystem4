@@ -90,7 +90,7 @@ void screenshot_save(void)
 		gfx_save_texture(gfx_main_surface(), name, ALCG_PNG);
 		char msg[PATH_MAX + 64];
 		snprintf(msg, sizeof(msg), "Screenshot saved to %s", name);
-		SDL_ShowSimpleMessageBox(0, "xsystem4", msg, NULL);
+		sys_show_simple_message_box(0, "xsystem4", msg);
 	}
 
 	free(name);
@@ -192,7 +192,7 @@ void screenshot_save(void)
 	//      that anything happened if zenity is not installed
 	char msg[PATH_MAX + 64];
 	snprintf(msg, sizeof(msg), "Screenshot saved to %s", name);
-	SDL_ShowSimpleMessageBox(0, "xsystem4", msg, NULL);
+	sys_show_simple_message_box(0, "xsystem4", msg);
 	NOTICE("%s", msg);
 
 	free(name);

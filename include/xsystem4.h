@@ -83,6 +83,8 @@ void get_time(int *hour, int *min, int *sec, int *ms);
 
 void screenshot_save(void);
 
+void sys_show_simple_message_box(unsigned flags, const char *title, const char *msg);
+
 #ifndef XSYS4_DATA_DIR
 #define XSYS4_DATA_DIR "/usr/local/share/xsystem4"
 #endif

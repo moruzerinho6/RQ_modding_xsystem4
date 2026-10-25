@@ -28,6 +28,7 @@
 
 #include "gfx/gfx.h"
 #include "input.h"
+#include "modloader.h"
 #include "xsystem4.h"
 
 #include "hll/hll.h"
@@ -315,4 +316,6 @@ void apply_game_specific_hacks(struct ain *ain)
 	// XXX: we don't rely on game_name because mods change it
 	if (ain_get_library(ain, "SengokuRanceFont") >= 0)
 		game_rance7_mg = true;
+
+	rq_mods_init(ain);
 }

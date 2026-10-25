@@ -22,12 +22,15 @@
 #include <time.h>
 #include <ctype.h>
 
+#include <SDL.h>
+
 #include "system4.h"
 #include "system4/file.h"
 #include "system4/utfsjis.h"
 
 #include "xsystem4.h"
 #include "debugger.h"
+#include "modloader.h"
 
 // In a Windows environment, console output should be SJIS-encoded
 // (assuming the user is using Japanese non-unicode locale).
@@ -207,4 +210,11 @@ void log_message(const char *log, const char *fmt, ...)
 	else
 		sys_vmessage(fmt, ap);
 	va_end(ap);
+}
+
+void sys_show_simple_message_box(unsigned flags, const char *title, const char *msg)
+{
+	if (rq_mods_swallow_msgbox(title, msg))
+		return;
+	SDL_ShowSimpleMessageBox(flags, title, msg, NULL);
 }
