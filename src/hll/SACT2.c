@@ -15,6 +15,7 @@
  */
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <math.h>
 #include <time.h>
 
@@ -37,6 +38,7 @@
 #include "vm/page.h"
 #include "dungeon/dungeon.h"
 #include "xsystem4.h"
+#include "profile.h"
 
 static enum sprite_engine_type engine_type = UNINITIALIZED_SPRITE_ENGINE;
 static struct sact_sprite **sprites = NULL;
@@ -176,14 +178,68 @@ int sact_GetMainSurfaceNumber(void)
 	return -1;
 }
 
+#ifdef RQ_PROFILE
+static int sact_count_in_scene(void)
+{
+	int n = 0;
+	for (int i = 0; i < nr_sprites; i++) {
+		if (sprites[i] && sprites[i]->sp.in_scene)
+			n++;
+	}
+	return n;
+}
+
+static double sact_ticks_ms(uint64_t ticks)
+{
+	uint64_t freq = SDL_GetPerformanceFrequency();
+	if (!freq)
+		return 0;
+	return (double)ticks * 1000.0 / (double)freq;
+}
+
+/* Recorded before gfx_swap so leftover HLL names this present, not the next. */
+static void sact_prof_update_split(uint64_t ev, uint64_t plug, uint64_t scn,
+				  uint64_t other, int dirty)
+{
+	double events = sact_ticks_ms(ev);
+	double plugin = sact_ticks_ms(plug);
+	double scene = sact_ticks_ms(scn);
+	double oth = sact_ticks_ms(other);
+	rq_prof_hll_add("ChipmunkSpriteEngine", "Update_events", events);
+	rq_prof_hll_add("ChipmunkSpriteEngine", "Update_plugin", plugin);
+	rq_prof_hll_add("ChipmunkSpriteEngine", "Update_scene", scene);
+	rq_prof_hll_add("ChipmunkSpriteEngine", "Update_other", oth);
+	rq_prof_note_update_split(events, plugin, scene, oth, dirty, sact_count_in_scene());
+}
+#endif
+
 int sact_Update(void)
 {
+#ifdef RQ_PROFILE
+	uint64_t t0 = SDL_GetPerformanceCounter();
+	uint64_t t1, t2, t3;
+#endif
 	handle_events();
+#ifdef RQ_PROFILE
+	t1 = SDL_GetPerformanceCounter();
+#endif
 	sprite_call_plugins();
+#ifdef RQ_PROFILE
+	t2 = SDL_GetPerformanceCounter();
+#endif
 	if (scene_is_dirty) {
 		scene_render();
+#ifdef RQ_PROFILE
+		t3 = SDL_GetPerformanceCounter();
+		sact_prof_update_split(t1 - t0, t2 - t1, t3 - t2, 0, 1);
+#endif
 		gfx_swap();
 		scene_is_dirty = false;
+	} else {
+#ifdef RQ_PROFILE
+		t3 = SDL_GetPerformanceCounter();
+		sact_prof_update_split(t1 - t0, t2 - t1, 0, t3 - t2, 0);
+#endif
 	}
 	return 1;
 }

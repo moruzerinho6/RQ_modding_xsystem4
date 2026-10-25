@@ -63,6 +63,14 @@ static double chipmunk_sleep_ms;
 static uint64_t hll_t0[RQ_HLL_NEST];
 static int hll_depth;
 
+static double upd_events_ms;
+static double upd_plugin_ms;
+static double upd_scene_ms;
+static double upd_other_ms;
+static uint32_t upd_n;
+static uint32_t upd_dirty;
+static int upd_nspr;
+
 static double ticks_to_ms(uint64_t ticks)
 {
 	if (!freq)
@@ -119,6 +127,13 @@ static void reset_accum(void)
 	hll_ms = 0;
 	hll_other_ms = 0;
 	chipmunk_sleep_ms = 0;
+	upd_events_ms = 0;
+	upd_plugin_ms = 0;
+	upd_scene_ms = 0;
+	upd_other_ms = 0;
+	upd_n = 0;
+	upd_dirty = 0;
+	upd_nspr = 0;
 }
 
 static void resolve_path(void)
@@ -253,7 +268,8 @@ static void write_hll_breakdown(double leftover_other, const char *stack)
 
 	int written = 0;
 	for (int i = 0; i < n && written < 32; i++) {
-		if (ptrs[i]->ms < 0.25 && written > 0)
+		bool split = ptrs[i]->fn && !strncmp(ptrs[i]->fn, "Update_", 7);
+		if (ptrs[i]->ms < 0.25 && written > 0 && !split)
 			break;
 		fprintf(hll_log, "%.3f,", now_t_ms());
 		csv_quote(hll_log, ptrs[i]->name);
@@ -309,6 +325,7 @@ void rq_prof_init(void)
 		fprintf(stderr, "[rq-prof] HLL breakdown %s (leftover > %.0f ms)\n",
 			hll_path, RQ_PROF_SLOW_MS);
 	fprintf(stderr, "[rq-prof] text-sprite cache on (CSV tc_hit/skip/miss/entries; leftover hll text-cache row)\n");
+	fprintf(stderr, "[rq-prof] Chipmunk Update split on leftover HLL (Update_events/plugin/scene/other + Update_split row)\n");
 }
 
 void rq_prof_fini(void)
@@ -406,6 +423,36 @@ void rq_prof_hll_end(const char *lib, const char *fn)
 	hll_note(lib, fn, elapsed);
 }
 
+void rq_prof_hll_add(const char *lib, const char *fn, double elapsed_ms)
+{
+	if (!inited)
+		rq_prof_init();
+	hll_note(lib, fn, elapsed_ms);
+}
+
+void rq_prof_note_update_split(double events_ms, double plugin_ms, double scene_ms,
+			      double other_ms, int dirty, int nspr)
+{
+	if (!inited)
+		rq_prof_init();
+	if (events_ms < 0)
+		events_ms = 0;
+	if (plugin_ms < 0)
+		plugin_ms = 0;
+	if (scene_ms < 0)
+		scene_ms = 0;
+	if (other_ms < 0)
+		other_ms = 0;
+	upd_events_ms += events_ms;
+	upd_plugin_ms += plugin_ms;
+	upd_scene_ms += scene_ms;
+	upd_other_ms += other_ms;
+	upd_n++;
+	if (dirty)
+		upd_dirty++;
+	upd_nspr = nspr;
+}
+
 void rq_prof_frame(void)
 {
 	if (!inited)
@@ -477,6 +524,20 @@ void rq_prof_frame(void)
 				(unsigned long long)(tc_hit + tc_skip + tc_miss));
 			csv_quote(hll_log, tc_stack);
 			fputc('\n', hll_log);
+			if (upd_n) {
+				char upd_stack[256];
+				snprintf(upd_stack, sizeof(upd_stack),
+					 "n=%u dirty=%u nspr=%d events=%.3f plugin=%.3f scene=%.3f other=%.3f",
+					 upd_n, upd_dirty, upd_nspr,
+					 upd_events_ms, upd_plugin_ms, upd_scene_ms, upd_other_ms);
+				fprintf(hll_log, "%.3f,", now_t_ms());
+				csv_quote(hll_log, "ChipmunkSpriteEngine.Update_split");
+				fprintf(hll_log, ",%.3f,%u,",
+					upd_events_ms + upd_plugin_ms + upd_scene_ms + upd_other_ms,
+					upd_n);
+				csv_quote(hll_log, upd_stack);
+				fputc('\n', hll_log);
+			}
 			fflush(hll_log);
 		}
 	}

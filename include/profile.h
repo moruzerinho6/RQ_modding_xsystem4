@@ -30,6 +30,9 @@ void rq_prof_toggle_pause(void);
 void rq_prof_note_sleep(int requested_ms, double elapsed_ms, const char *ain_stack);
 void rq_prof_hll_begin(void);
 void rq_prof_hll_end(const char *lib, const char *fn);
+void rq_prof_hll_add(const char *lib, const char *fn, double elapsed_ms);
+void rq_prof_note_update_split(double events_ms, double plugin_ms, double scene_ms,
+			      double other_ms, int dirty, int nspr);
 void vm_prof_ain_stack(char *buf, size_t n);
 
 #else
@@ -52,6 +55,23 @@ static inline void rq_prof_hll_end(const char *lib, const char *fn)
 {
 	(void)lib;
 	(void)fn;
+}
+static inline void rq_prof_hll_add(const char *lib, const char *fn, double elapsed_ms)
+{
+	(void)lib;
+	(void)fn;
+	(void)elapsed_ms;
+}
+static inline void rq_prof_note_update_split(double events_ms, double plugin_ms,
+					    double scene_ms, double other_ms,
+					    int dirty, int nspr)
+{
+	(void)events_ms;
+	(void)plugin_ms;
+	(void)scene_ms;
+	(void)other_ms;
+	(void)dirty;
+	(void)nspr;
 }
 static inline void vm_prof_ain_stack(char *buf, size_t n)
 {
