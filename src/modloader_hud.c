@@ -103,9 +103,13 @@ static int wrap_method_flag(struct ain *ain, int fno, int sys)
 
 	buffer_init(&out, NULL, 0);
 	emit1(&out, FUNC, fno);
+	/* CALLMETHOD pops nr_args, then the struct page under them.
+	 * Vanilla: PUSH this, PUSH arg0..argN, CALLMETHOD (see T_Sprite@setCg).
+	 * Args then PUSHSTRUCTPAGE made create's this = nZ and blew up in
+	 * stack_pop_var (heap/page like 121/14) while loading a dungeon. */
+	emit0(&out, PUSHSTRUCTPAGE);
 	for (i = 0; i < nargs; i++)
 		emit1(&out, SH_LOCALREF, i);
-	emit0(&out, PUSHSTRUCTPAGE);
 	emit1(&out, CALLMETHOD, dup);
 	emit1(&out, CALLSYS, sys);
 	emit0(&out, RETURN);
