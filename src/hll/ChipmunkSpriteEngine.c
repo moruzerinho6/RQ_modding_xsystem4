@@ -115,6 +115,7 @@ HLL_QUIET_UNIMPLEMENTED((keep_previous_view = on, true), bool, ChipmunkSpriteEng
 HLL_QUIET_UNIMPLEMENTED(keep_previous_view, bool, ChipmunkSpriteEngine, KeepPreviousView_GetMode);
 HLL_QUIET_UNIMPLEMENTED(false, bool, ChipmunkSpriteEngine, KeepPreviousView);
 
+/* Raw SDL_Delay (not vm_sleep). Timed as ChipmunkSpriteEngine.Sleep via hll_call. */
 static void ChipmunkSpriteEngine_Sleep(void)
 {
 	static int prev_time = 0;

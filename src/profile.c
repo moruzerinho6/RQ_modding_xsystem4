@@ -18,11 +18,24 @@
 #include "profile.h"
 
 #define RQ_PROF_SLOW_MS 50.0
+#define RQ_HLL_CAP 1024
+#define RQ_HLL_NEST 8
+
+struct rq_hll_acc {
+	const char *lib;
+	const char *fn;
+	char name[96];
+	double ms;
+	uint32_t n;
+	bool used;
+};
 
 static FILE *out;
 static FILE *ain_log;
+static FILE *hll_log;
 static char out_path[1024];
 static char ain_path[1100];
+static char hll_path[1100];
 static uint64_t freq;
 static uint64_t t_start;
 static uint64_t t_last_frame;
@@ -38,6 +51,16 @@ static double sleep_req_ms;
 static uint32_t n_sleep;
 static double slowest_sleep_ms;
 static char sleep_ain[512];
+
+static struct rq_hll_acc hll_tab[RQ_HLL_CAP];
+static int hll_used_idx[RQ_HLL_CAP];
+static int n_hll_used;
+static uint32_t n_hll;
+static double hll_ms;
+static double hll_other_ms;
+static double chipmunk_sleep_ms;
+static uint64_t hll_t0[RQ_HLL_NEST];
+static int hll_depth;
 
 static double ticks_to_ms(uint64_t ticks)
 {
@@ -88,6 +111,13 @@ static void reset_accum(void)
 	n_sleep = 0;
 	slowest_sleep_ms = 0;
 	sleep_ain[0] = '\0';
+	for (int i = 0; i < n_hll_used; i++)
+		hll_tab[hll_used_idx[i]].used = false;
+	n_hll_used = 0;
+	n_hll = 0;
+	hll_ms = 0;
+	hll_other_ms = 0;
+	chipmunk_sleep_ms = 0;
 }
 
 static void resolve_path(void)
@@ -108,19 +138,130 @@ static void resolve_path(void)
 	size_t n = strlen(out_path);
 	if (n > 4 && !strcmp(out_path + n - 4, ".csv")) {
 		snprintf(ain_path, sizeof(ain_path), "%.*s-ain.log", (int)(n - 4), out_path);
+		snprintf(hll_path, sizeof(hll_path), "%.*s-hll.log", (int)(n - 4), out_path);
 	} else {
 		snprintf(ain_path, sizeof(ain_path), "%s-ain.log", out_path);
+		snprintf(hll_path, sizeof(hll_path), "%s-hll.log", out_path);
 	}
 }
 
-static void ain_log_event(const char *kind, double elapsed, double requested, const char *stack)
+static bool hll_is_present(const char *fn)
+{
+	return fn && (!strcmp(fn, "Update") || !strcmp(fn, "UpdateView"));
+}
+
+static unsigned hll_hash(const char *lib, const char *fn)
+{
+	uintptr_t a = (uintptr_t)lib;
+	uintptr_t b = (uintptr_t)fn;
+	return (unsigned)((a * 1315423911u) ^ (b * 2654435761u)) & (RQ_HLL_CAP - 1);
+}
+
+static struct rq_hll_acc *hll_slot(const char *lib, const char *fn)
+{
+	unsigned i = hll_hash(lib, fn);
+	for (unsigned n = 0; n < RQ_HLL_CAP; n++) {
+		struct rq_hll_acc *s = &hll_tab[i];
+		if (!s->used) {
+			s->lib = lib;
+			s->fn = fn;
+			if (lib && fn)
+				snprintf(s->name, sizeof(s->name), "%s.%s", lib, fn);
+			else if (fn)
+				snprintf(s->name, sizeof(s->name), "%s", fn);
+			else
+				s->name[0] = '\0';
+			s->ms = 0;
+			s->n = 0;
+			s->used = true;
+			if (n_hll_used < RQ_HLL_CAP)
+				hll_used_idx[n_hll_used++] = (int)i;
+			return s;
+		}
+		if (s->lib == lib && s->fn == fn)
+			return s;
+		i = (i + 1) & (RQ_HLL_CAP - 1);
+	}
+	return NULL;
+}
+
+static void hll_note(const char *lib, const char *fn, double elapsed_ms)
+{
+	if (elapsed_ms < 0)
+		elapsed_ms = 0;
+	n_hll++;
+	hll_ms += elapsed_ms;
+	if (lib && fn && !strcmp(lib, "ChipmunkSpriteEngine") && !strcmp(fn, "Sleep"))
+		chipmunk_sleep_ms += elapsed_ms;
+	if (!hll_is_present(fn))
+		hll_other_ms += elapsed_ms;
+	struct rq_hll_acc *s = hll_slot(lib, fn);
+	if (!s)
+		return;
+	s->ms += elapsed_ms;
+	s->n++;
+}
+
+static int hll_ptr_cmp(const void *a, const void *b)
+{
+	const struct rq_hll_acc *x = *(const struct rq_hll_acc *const *)a;
+	const struct rq_hll_acc *y = *(const struct rq_hll_acc *const *)b;
+	if (y->ms > x->ms)
+		return 1;
+	if (y->ms < x->ms)
+		return -1;
+	return 0;
+}
+
+static const struct rq_hll_acc *top_leftover_hll(void)
+{
+	const struct rq_hll_acc *best = NULL;
+	for (int i = 0; i < n_hll_used; i++) {
+		const struct rq_hll_acc *s = &hll_tab[hll_used_idx[i]];
+		if (hll_is_present(s->fn))
+			continue;
+		if (!best || s->ms > best->ms)
+			best = s;
+	}
+	return best;
+}
+
+static void ain_log_event(const char *kind, double elapsed, double requested,
+			 const char *stack, const char *hll, double hll_elapsed)
 {
 	if (!ain_log || paused)
 		return;
 	fprintf(ain_log, "%.3f,%s,%.3f,%.3f,", now_t_ms(), kind, elapsed, requested);
 	csv_quote(ain_log, stack ? stack : "");
-	fputc('\n', ain_log);
+	fputc(',', ain_log);
+	csv_quote(ain_log, hll ? hll : "");
+	fprintf(ain_log, ",%.3f\n", hll_elapsed);
 	fflush(ain_log);
+}
+
+static void write_hll_breakdown(double leftover_other, const char *stack)
+{
+	if (!hll_log || paused || leftover_other <= RQ_PROF_SLOW_MS || n_hll_used == 0)
+		return;
+
+	struct rq_hll_acc *ptrs[RQ_HLL_CAP];
+	int n = 0;
+	for (int i = 0; i < n_hll_used; i++)
+		ptrs[n++] = &hll_tab[hll_used_idx[i]];
+	qsort(ptrs, (size_t)n, sizeof(ptrs[0]), hll_ptr_cmp);
+
+	int written = 0;
+	for (int i = 0; i < n && written < 32; i++) {
+		if (ptrs[i]->ms < 0.25 && written > 0)
+			break;
+		fprintf(hll_log, "%.3f,", now_t_ms());
+		csv_quote(hll_log, ptrs[i]->name);
+		fprintf(hll_log, ",%.3f,%u,", ptrs[i]->ms, ptrs[i]->n);
+		csv_quote(hll_log, stack ? stack : "");
+		fputc('\n', hll_log);
+		written++;
+	}
+	fflush(hll_log);
 }
 
 void rq_prof_init(void)
@@ -139,14 +280,22 @@ void rq_prof_init(void)
 	fprintf(out,
 		"frame,t_ms,frame_ms,input_ms,plugin_ms,scene_ms,sprite_ms,"
 		"dungeon_ms,tapir_ms,swap_ms,sleep_ms,n_sleep,sleep_req_ms,"
-		"leftover_ms,leftover_other_ms,n_sprite,n_dungeon,n_tapir,vsync,ain\n");
+		"leftover_ms,leftover_other_ms,script_ms,hll_ms,hll_other_ms,n_hll,"
+		"chipmunk_sleep_ms,n_sprite,n_dungeon,n_tapir,vsync,ain,top_hll,top_hll_ms\n");
 	fflush(out);
 	ain_log = fopen(ain_path, "w");
 	if (ain_log) {
-		fprintf(ain_log, "t_ms,kind,elapsed_ms,requested_ms,ain_stack\n");
+		fprintf(ain_log, "t_ms,kind,elapsed_ms,requested_ms,ain_stack,hll,hll_ms\n");
 		fflush(ain_log);
 	} else {
 		fprintf(stderr, "[rq-prof] could not open %s\n", ain_path);
+	}
+	hll_log = fopen(hll_path, "w");
+	if (hll_log) {
+		fprintf(hll_log, "t_ms,hll,ms,n,ain_stack\n");
+		fflush(hll_log);
+	} else {
+		fprintf(stderr, "[rq-prof] could not open %s\n", hll_path);
 	}
 	inited = true;
 	atexit(rq_prof_fini);
@@ -154,10 +303,18 @@ void rq_prof_init(void)
 	if (ain_log)
 		fprintf(stderr, "[rq-prof] slow AIN log %s (sleep/leftover > %.0f ms)\n",
 			ain_path, RQ_PROF_SLOW_MS);
+	if (hll_log)
+		fprintf(stderr, "[rq-prof] HLL breakdown %s (leftover > %.0f ms)\n",
+			hll_path, RQ_PROF_SLOW_MS);
 }
 
 void rq_prof_fini(void)
 {
+	if (hll_log) {
+		fflush(hll_log);
+		fclose(hll_log);
+		hll_log = NULL;
+	}
 	if (ain_log) {
 		fflush(ain_log);
 		fclose(ain_log);
@@ -214,7 +371,27 @@ void rq_prof_note_sleep(int requested_ms, double elapsed_ms, const char *ain_sta
 		copy_top_name(sleep_ain, sizeof(sleep_ain), ain_stack);
 	}
 	if (elapsed_ms > RQ_PROF_SLOW_MS)
-		ain_log_event("sleep", elapsed_ms, (double)requested_ms, ain_stack);
+		ain_log_event("sleep", elapsed_ms, (double)requested_ms, ain_stack, "", 0);
+}
+
+void rq_prof_hll_begin(void)
+{
+	if (!inited)
+		rq_prof_init();
+	if (hll_depth < RQ_HLL_NEST)
+		hll_t0[hll_depth] = SDL_GetPerformanceCounter();
+	hll_depth++;
+}
+
+void rq_prof_hll_end(const char *lib, const char *fn)
+{
+	if (hll_depth <= 0)
+		return;
+	hll_depth--;
+	if (hll_depth >= RQ_HLL_NEST)
+		return;
+	double elapsed = ticks_to_ms(SDL_GetPerformanceCounter() - hll_t0[hll_depth]);
+	hll_note(lib, fn, elapsed);
 }
 
 void rq_prof_frame(void)
@@ -246,28 +423,38 @@ void rq_prof_frame(void)
 	if (leftover_other_ms < 0)
 		leftover_other_ms = 0;
 
+	double script_ms = leftover_other_ms - hll_other_ms;
+	if (script_ms < 0)
+		script_ms = 0;
+
+	const struct rq_hll_acc *top = top_leftover_hll();
+	const char *top_name = top ? top->name : "";
+	double top_ms = top ? top->ms : 0;
+
 	char ain_name[512];
+	char stack[512];
 	ain_name[0] = '\0';
+	stack[0] = '\0';
 	if (sleep_ain[0]) {
 		snprintf(ain_name, sizeof(ain_name), "%s", sleep_ain);
-	} else if (leftover_ms > RQ_PROF_SLOW_MS) {
-		char stack[512];
+	}
+	if (leftover_ms > RQ_PROF_SLOW_MS || leftover_other_ms > RQ_PROF_SLOW_MS) {
 		vm_prof_ain_stack(stack, sizeof(stack));
-		copy_top_name(ain_name, sizeof(ain_name), stack);
-		if (leftover_other_ms > RQ_PROF_SLOW_MS)
-			ain_log_event("leftover", leftover_other_ms, 0, stack);
+		if (!ain_name[0])
+			copy_top_name(ain_name, sizeof(ain_name), stack);
 	}
 
-	if (leftover_other_ms > RQ_PROF_SLOW_MS && sleep_ain[0]) {
-		char stack[512];
-		vm_prof_ain_stack(stack, sizeof(stack));
-		ain_log_event("leftover", leftover_other_ms, 0, stack);
+	if (leftover_other_ms > RQ_PROF_SLOW_MS) {
+		if (!stack[0])
+			vm_prof_ain_stack(stack, sizeof(stack));
+		ain_log_event("leftover", leftover_other_ms, 0, stack, top_name, top_ms);
+		write_hll_breakdown(leftover_other_ms, stack);
 	}
 
 	if (!paused) {
 		int vsync = SDL_GL_GetSwapInterval();
 		fprintf(out,
-			"%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%.3f,%.3f,%u,%u,%u,%d,",
+			"%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%u,%u,%u,%d,",
 			frame_no,
 			t_ms,
 			frame_ms,
@@ -283,22 +470,29 @@ void rq_prof_frame(void)
 			sleep_req_ms,
 			leftover_ms,
 			leftover_other_ms,
+			script_ms,
+			hll_ms,
+			hll_other_ms,
+			n_hll,
+			chipmunk_sleep_ms,
 			counts[RQ_PROF_SPRITE],
 			counts[RQ_PROF_DUNGEON],
 			counts[RQ_PROF_TAPIR],
 			vsync);
 		csv_quote(out, ain_name);
-		fputc('\n', out);
+		fputc(',', out);
+		csv_quote(out, top_name);
+		fprintf(out, ",%.3f\n", top_ms);
 		if ((frame_no % 30) == 0)
 			fflush(out);
 		if ((frame_no % 60) == 0) {
 			double fps = frame_ms > 0.1 ? 1000.0 / frame_ms : 0;
 			fprintf(stderr,
-				"[rq-prof] frame=%u fps=%.1f frame_ms=%.2f sleep=%.2f leftover=%.2f leftover_other=%.2f ain=%s sprites=%u vsync=%d\n",
-				frame_no, fps, frame_ms, sleep_ms, leftover_ms, leftover_other_ms,
-				ain_name[0] ? ain_name : "-",
-				counts[RQ_PROF_SPRITE],
-				vsync);
+				"[rq-prof] frame=%u fps=%.1f frame_ms=%.2f leftover_other=%.2f hll_other=%.2f script=%.2f top=%s:%.2f ain=%s\n",
+				frame_no, fps, frame_ms, leftover_other_ms, hll_other_ms, script_ms,
+				top_name[0] ? top_name : "-",
+				top_ms,
+				ain_name[0] ? ain_name : "-");
 		}
 	}
 	reset_accum();

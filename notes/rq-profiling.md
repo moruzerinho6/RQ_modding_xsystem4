@@ -14,8 +14,9 @@ ninja -C build-profile
 Output next to the exe (override with env `XSYS4_PROFILE`):
 
 - `xsystem4-profile.csv` — one row per present
-- `xsystem4-profile-ain.log` — sleep/leftover events over ~50 ms with AIN stack
+- `xsystem4-profile-ain.log` — sleep/leftover events over ~50 ms with AIN stack + top HLL
+- `xsystem4-profile-hll.log` — per-HLL breakdown on leftover > 50 ms
 
-New CSV columns vs the first hub capture: `sleep_ms`, `n_sleep`, `sleep_req_ms`, `leftover_ms`, `leftover_other_ms`, `ain`.
+Sleep columns kept. New vs the sleep capture: `script_ms`, `hll_ms`, `hll_other_ms`, `n_hll`, `chipmunk_sleep_ms`, `top_hll`, `top_hll_ms`.
 
 F12 pauses capture. Do not push this branch until Moru asks.

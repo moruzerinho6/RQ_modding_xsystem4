@@ -25,6 +25,7 @@
 #include "vm/heap.h"
 #include "vm/page.h"
 #include "xsystem4.h"
+#include "profile.h"
 
 #define HLL_MAX_ARGS 64
 
@@ -356,11 +357,13 @@ void hll_call(int libno, int fno)
 	}
 
 	union vm_value r;
+	rq_prof_hll_begin();
 #ifdef TRACE_HLL
 	trace_hll_call(&ain->libraries[libno], f, fun, &r, args);
 #else
 	ffi_call(&fun->cif, (void*)fun->fun, &r, args);
 #endif
+	rq_prof_hll_end(ain->libraries[libno].name, f->name);
 
 
 	for (int i = 0, j = 0; i < f->nr_arguments; i++, j++) {
