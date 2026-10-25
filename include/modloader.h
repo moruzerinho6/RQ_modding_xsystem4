@@ -42,6 +42,8 @@ int rq_lua_hud_hit(struct lua_State *L);
 int rq_lua_hud_clicked(struct lua_State *L);
 int rq_lua_hud_block(struct lua_State *L);
 int rq_lua_hud_screen(struct lua_State *L);
+int rq_lua_hud_text_width(struct lua_State *L);
+int rq_lua_hud_wrap(struct lua_State *L);
 int rq_lua_loot_list(struct lua_State *L);
 
 #else

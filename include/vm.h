@@ -43,6 +43,8 @@ enum vm_extra_syscall {
 	VM_XSYS_HUD_SHOW = 0x8000000C,
 	VM_XSYS_HUD_PROFILE_ON = 0x8000000D,
 	VM_XSYS_HUD_PROFILE_OFF = 0x8000000E,
+	VM_XSYS_HUD_MODAL_ON = 0x8000000F,
+	VM_XSYS_HUD_MODAL_OFF = 0x80000010,
 };
 
 // Non-heap values. Stored in pages and on the stack.

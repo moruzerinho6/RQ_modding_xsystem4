@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -54,11 +55,18 @@ struct hud_cg {
 	Texture t;
 };
 
+#define MODAL_CONFIG 1
+#define MODAL_RESULT 2
+#define MODAL_RESULT_ITEM 4
+#define MODAL_ADV 8
+#define MODAL_SELECT 16
+
 static int g_dungeon;
 static int g_shown;
 static int g_suspended;
 static int g_battle;
 static int g_profile;
+static int g_modal;
 static int g_block_mouse;
 static int g_on_frame_ref = LUA_NOREF;
 static int g_mx, g_my, g_left, g_right, g_left_edge, g_prev_left;
@@ -189,6 +197,135 @@ static int wrap_set_show(struct ain *ain, int fno)
 	return 1;
 }
 
+static int wrap_method_modal(struct ain *ain, int fno, int mask, int on)
+{
+	int dup = ain_dup_function(ain, fno);
+	int nargs = ain->functions[fno].nr_args;
+	int i;
+	struct buffer out;
+	int sys = on ? VM_XSYS_HUD_MODAL_ON : VM_XSYS_HUD_MODAL_OFF;
+
+	buffer_init(&out, NULL, 0);
+	emit1(&out, FUNC, fno);
+	emit0(&out, PUSHSTRUCTPAGE);
+	for (i = 0; i < nargs; i++)
+		emit1(&out, SH_LOCALREF, i);
+	emit1(&out, CALLMETHOD, dup);
+	emit1(&out, PUSH, mask);
+	emit1(&out, CALLSYS, sys);
+	emit0(&out, RETURN);
+	emit1(&out, ENDFUNC, fno);
+	commit_wrap(ain, fno, &out);
+	rq_log("hud: wrap modal fno=%d mask=%d on=%d nargs=%d", fno, mask, on, nargs);
+	return 1;
+}
+
+/* Blocking @select (and similar): Config/result keep the object alive, and
+ * T_MapParts@create clears g_modal, so create/delete alone can miss overlays. */
+static int wrap_modal_around(struct ain *ain, int fno, int mask, int method)
+{
+	int dup = ain_dup_function(ain, fno);
+	int nargs = ain->functions[fno].nr_args;
+	int i;
+	struct buffer out;
+
+	buffer_init(&out, NULL, 0);
+	emit1(&out, FUNC, fno);
+	emit1(&out, PUSH, mask);
+	emit1(&out, CALLSYS, VM_XSYS_HUD_MODAL_ON);
+	if (method)
+		emit0(&out, PUSHSTRUCTPAGE);
+	for (i = 0; i < nargs; i++)
+		emit1(&out, SH_LOCALREF, i);
+	if (method)
+		emit1(&out, CALLMETHOD, dup);
+	else
+		emit1(&out, CALLFUNC, dup);
+	emit1(&out, PUSH, mask);
+	emit1(&out, CALLSYS, VM_XSYS_HUD_MODAL_OFF);
+	emit0(&out, RETURN);
+	emit1(&out, ENDFUNC, fno);
+	commit_wrap(ain, fno, &out);
+	rq_log("hud: wrap modal around fno=%d mask=%d method=%d nargs=%d",
+	       fno, mask, method, nargs);
+	return 1;
+}
+
+static void wrap_func_modal(struct ain *ain, const char *name, int mask)
+{
+	int fno = find_fn(ain, name);
+	if (fno < 0) {
+		rq_log("hud: modal skip %s (missing)", name);
+		return;
+	}
+	wrap_modal_around(ain, fno, mask, 0);
+}
+
+static void wrap_ui(struct ain *ain, const char *cls, int mask)
+{
+	char buf[160];
+	int c, d, s;
+
+	snprintf(buf, sizeof buf, "%s@create", cls);
+	c = find_fn(ain, buf);
+	if (c >= 0)
+		wrap_method_modal(ain, c, mask, 1);
+	snprintf(buf, sizeof buf, "%s@delete", cls);
+	d = find_fn(ain, buf);
+	if (d >= 0)
+		wrap_method_modal(ain, d, mask, 0);
+	snprintf(buf, sizeof buf, "%s@select", cls);
+	s = find_fn(ain, buf);
+	if (s >= 0)
+		wrap_modal_around(ain, s, mask, 1);
+	rq_log("hud: modal %s mask=%d create=%d delete=%d select=%d",
+	       cls, mask, c, d, s);
+}
+
+static void log_struct_hits(struct ain *ain, const char *ascii)
+{
+	int i, n = 0;
+	if (!ain || !ascii)
+		return;
+	for (i = 0; i < ain->nr_structures && n < 8; i++) {
+		char *utf;
+		if (!ain->structures[i].name || !strstr(ain->structures[i].name, ascii))
+			continue;
+		utf = sjis2utf(ain->structures[i].name, 0);
+		rq_log("hud: struct %s", utf ? utf : ascii);
+		free(utf);
+		n++;
+	}
+}
+
+static void hud_make_ts(struct text_style *ts, float size, int r, int g, int b)
+{
+	memset(ts, 0, sizeof(*ts));
+	ts->face = FONT_GOTHIC;
+	ts->size = size > 1.0f ? size : 16.0f;
+	ts->weight = FW_NORMAL;
+	ts->edge_left = 1.0f;
+	ts->edge_up = 1.0f;
+	ts->edge_right = 1.0f;
+	ts->edge_down = 1.0f;
+	ts->color.r = (uint8_t)r;
+	ts->color.g = (uint8_t)g;
+	ts->color.b = (uint8_t)b;
+	ts->color.a = 255;
+	ts->edge_color.a = 255;
+	ts->scale_x = 1.0f;
+	ts->space_scale_x = 1.0f;
+}
+
+static int hud_measure_sjis(const char *sjis, float size)
+{
+	struct text_style ts;
+	if (!sjis || !*sjis)
+		return 0;
+	hud_make_ts(&ts, size, 255, 255, 255);
+	return (int)ceilf(gfx_size_text(&ts, sjis));
+}
+
 static void clear_cmds(void)
 {
 	int i;
@@ -242,7 +379,7 @@ int rq_dungeon_active(void)
 
 int rq_dungeon_exploring(void)
 {
-	return g_dungeon && g_shown && !g_suspended && !g_battle && !g_profile;
+	return g_dungeon && g_shown && !g_suspended && !g_battle && !g_profile && !g_modal;
 }
 
 int rq_hud_block_mouse(void)
@@ -259,6 +396,7 @@ int rq_hud_syscall(int code)
 		g_suspended = 0;
 		g_battle = 0;
 		g_profile = 0;
+		g_modal = 0;
 		return 1;
 	case VM_XSYS_HUD_OFF:
 		g_dungeon = 0;
@@ -266,6 +404,7 @@ int rq_hud_syscall(int code)
 		g_suspended = 0;
 		g_battle = 0;
 		g_profile = 0;
+		g_modal = 0;
 		g_block_mouse = 0;
 		return 1;
 	case VM_XSYS_HUD_SUSPEND:
@@ -288,6 +427,12 @@ int rq_hud_syscall(int code)
 		return 1;
 	case VM_XSYS_HUD_PROFILE_OFF:
 		g_profile = 0;
+		return 1;
+	case VM_XSYS_HUD_MODAL_ON:
+		g_modal |= stack_pop().i;
+		return 1;
+	case VM_XSYS_HUD_MODAL_OFF:
+		g_modal &= ~stack_pop().i;
 		return 1;
 	default:
 		return 0;
@@ -326,7 +471,18 @@ int rq_hud_install(struct ain *ain)
 		wrap_method_flag(ain, f_st_c, VM_XSYS_HUD_PROFILE_ON, 0);
 	if (f_st_d >= 0)
 		wrap_method_flag(ain, f_st_d, VM_XSYS_HUD_PROFILE_OFF, 0);
-	rq_log("hud: exploring wraps show=%d susp=%d res=%d battle=%d status=%d/%d",
+	log_struct_hits(ain, "SystemMenu");
+	log_struct_hits(ain, "Result");
+	log_struct_hits(ain, "MapMessage");
+	log_struct_hits(ain, "T_ADV");
+	wrap_ui(ain, "T_SystemMenu", MODAL_CONFIG);
+	wrap_ui(ain, "T_Result", MODAL_RESULT);
+	wrap_ui(ain, "T_ResultItem", MODAL_RESULT_ITEM);
+	wrap_ui(ain, "T_MapMessage", MODAL_ADV);
+	wrap_ui(ain, "T_Select", MODAL_SELECT);
+	wrap_ui(ain, "T_ADV", MODAL_ADV);
+	wrap_func_modal(ain, "リザルト鑑定", MODAL_RESULT_ITEM);
+	rq_log("hud: exploring wraps show=%d susp=%d res=%d battle=%d status=%d/%d modal=config/result/adv/select",
 	       f_show, f_susp, f_res, f_battle, f_st_c, f_st_d);
 	return 1;
 }
@@ -374,6 +530,102 @@ int rq_lua_hud_screen(lua_State *L)
 	lua_pushinteger(L, config.view_width);
 	lua_pushinteger(L, config.view_height);
 	return 2;
+}
+
+int rq_lua_hud_text_width(lua_State *L)
+{
+	const char *utf = luaL_checkstring(L, 1);
+	float size = 16.0f;
+	char *sjis;
+	if (lua_istable(L, 2)) {
+		lua_getfield(L, 2, "size");
+		if (lua_isnumber(L, -1))
+			size = (float)lua_tonumber(L, -1);
+		lua_pop(L, 1);
+	} else if (lua_isnumber(L, 2)) {
+		size = (float)lua_tonumber(L, 2);
+	}
+	sjis = utf2sjis(utf ? utf : "", 0);
+	if (!sjis) {
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+	lua_pushinteger(L, hud_measure_sjis(sjis, size));
+	free(sjis);
+	return 1;
+}
+
+static void hud_push_utf_line(lua_State *L, int n, const char *sjis)
+{
+	char *utf = sjis2utf(sjis ? sjis : "", 0);
+	lua_pushinteger(L, n);
+	lua_pushstring(L, utf ? utf : "");
+	lua_settable(L, -3);
+	free(utf);
+}
+
+int rq_lua_hud_wrap(lua_State *L)
+{
+	const char *utf = luaL_checkstring(L, 1);
+	int max_w = (int)luaL_checkinteger(L, 2);
+	float size = (float)luaL_optnumber(L, 3, 14.0f);
+	struct text_style ts;
+	char *sjis, *p, *line_start, *last_brk;
+	int n = 0;
+
+	lua_newtable(L);
+	if (max_w < 8)
+		max_w = 8;
+	hud_make_ts(&ts, size, 255, 255, 255);
+	sjis = utf2sjis(utf ? utf : "", 0);
+	if (!sjis || !*sjis) {
+		free(sjis);
+		return 1;
+	}
+	p = sjis;
+	line_start = p;
+	last_brk = NULL;
+	while (*p) {
+		char *next;
+		char saved;
+		int w;
+
+		if (*p == '\n' || *p == '\r') {
+			saved = *p;
+			*p = 0;
+			hud_push_utf_line(L, ++n, line_start);
+			*p = saved;
+			if (*p == '\r' && p[1] == '\n')
+				p++;
+			p++;
+			line_start = p;
+			last_brk = NULL;
+			continue;
+		}
+		next = sjis_skip_char(p);
+		saved = *next;
+		*next = 0;
+		w = (int)ceilf(gfx_size_text(&ts, line_start));
+		*next = saved;
+		if (w > max_w && p != line_start) {
+			char *cut = last_brk ? last_brk : p;
+			char c2 = *cut;
+			*cut = 0;
+			hud_push_utf_line(L, ++n, line_start);
+			*cut = c2;
+			line_start = (c2 == ' ') ? cut + 1 : cut;
+			last_brk = NULL;
+			p = line_start;
+			continue;
+		}
+		if (*p == ' ')
+			last_brk = p;
+		p = next;
+	}
+	if (line_start && *line_start)
+		hud_push_utf_line(L, ++n, line_start);
+	free(sjis);
+	return 1;
 }
 
 int rq_lua_hud_rect(lua_State *L)
@@ -496,22 +748,7 @@ int rq_hud_tick(void)
 void rq_hud_draw(void)
 {
 	int i;
-	struct text_style ts = {
-		.face = FONT_GOTHIC,
-		.size = 16.0f,
-		.bold_width = 0.0f,
-		.weight = FW_NORMAL,
-		.edge_left = 1.0f,
-		.edge_up = 1.0f,
-		.edge_right = 1.0f,
-		.edge_down = 1.0f,
-		.color = { .r = 255, .g = 255, .b = 255, .a = 255 },
-		.edge_color = { .r = 0, .g = 0, .b = 0, .a = 255 },
-		.scale_x = 1.0f,
-		.space_scale_x = 1.0f,
-		.font_spacing = 0.0f,
-		.font_size = NULL
-	};
+	struct text_style ts;
 
 	for (i = 0; i < g_ncmd; i++) {
 		struct hud_cmd *c = &g_cmd[i];
@@ -537,16 +774,11 @@ void rq_hud_draw(void)
 			Rectangle r;
 			char *sjis;
 			int tw, th;
-			ts.size = c->size > 1.0f ? c->size : 16.0f;
-			ts.font_size = NULL;
-			ts.color.r = (uint8_t)c->r;
-			ts.color.g = (uint8_t)c->g;
-			ts.color.b = (uint8_t)c->b;
-			ts.color.a = 255;
+			hud_make_ts(&ts, c->size, c->r, c->g, c->b);
 			sjis = utf2sjis(c->text, 0);
 			if (!sjis)
 				continue;
-			tw = (int)(strlen(c->text) * ts.size) + 24;
+			tw = hud_measure_sjis(sjis, ts.size) + 8;
 			if (tw < 32)
 				tw = 32;
 			th = (int)ts.size + 20;
