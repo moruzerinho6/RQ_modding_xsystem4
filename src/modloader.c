@@ -567,6 +567,18 @@ static int l_find_funcs(lua_State *L)
 	return 1;
 }
 
+static int l_loot_preview(lua_State *L)
+{
+	int ok;
+	if (!g_ain)
+		return luaL_error(L, "AIN not loaded");
+	ok = rq_loot_install(g_ain);
+	if (!ok)
+		return luaL_error(L, "loot_preview install failed (see mods/rqmod.log)");
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static int l_patch_float(lua_State *L)
 {
 	const char *name = luaL_checkstring(L, 1);
@@ -599,6 +611,8 @@ static void open_rq(lua_State *L)
 	lua_setfield(L, -2, "skip_sdl_msgbox");
 	lua_pushcfunction(L, l_find_funcs);
 	lua_setfield(L, -2, "find");
+	lua_pushcfunction(L, l_loot_preview);
+	lua_setfield(L, -2, "loot_preview");
 	lua_pushstring(L, g_rq_game_dir);
 	lua_setfield(L, -2, "game_dir");
 	lua_pushstring(L, g_rq_mods_dir);

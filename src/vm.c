@@ -800,6 +800,10 @@ static void system_call(enum syscall_code code)
 			stack_push(key_is_down(stack_pop().i));
 			break;
 		default:
+#ifdef RQ_MODLOADER
+			if (rq_loot_syscall(code))
+				break;
+#endif
 			VM_ERROR("Unimplemented syscall: 0x%X", code);
 		}
 	}

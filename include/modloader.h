@@ -16,6 +16,8 @@ void rq_mods_on_vm_call(int fno, int struct_page);
 bool rq_mods_swallow_msgbox(const char *title, const char *msg);
 void rq_mods_agent_start(void);
 void rq_log(const char *fmt, ...);
+int rq_loot_install(struct ain *ain);
+int rq_loot_syscall(int code);
 
 #else
 
@@ -34,6 +36,8 @@ static inline bool rq_mods_swallow_msgbox(const char *title, const char *msg)
 }
 static inline void rq_mods_agent_start(void) {}
 static inline void rq_log(const char *fmt, ...) { (void)fmt; }
+static inline int rq_loot_install(struct ain *ain) { (void)ain; return 0; }
+static inline int rq_loot_syscall(int code) { (void)code; return 0; }
 
 #endif
 

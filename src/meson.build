@@ -245,7 +245,7 @@ if get_option('modloader')
                              c_args : ['-DMAKE_LIB', '-Wno-unused-parameter',
                                        '-Wno-implicit-fallthrough'],
                              include_directories : lua_inc)
-    xsystem4 += ['modloader.c', 'modloader_agent.c']
+    xsystem4 += ['modloader.c', 'modloader_agent.c', 'modloader_loot.c']
     exe_inc += lua_inc
     exe_link += lua_lib
 endif
