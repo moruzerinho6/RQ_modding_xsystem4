@@ -26,6 +26,7 @@
 #include "vm.h"
 #include "xsystem4.h"
 #include "debugger.h"
+#include "profile.h"
 
 #ifndef M_PI
 #define M_PI (3.14159265358979323846)
@@ -634,6 +635,7 @@ void handle_window_events(void)
 
 void handle_events(void)
 {
+	rq_prof_begin(RQ_PROF_INPUT);
 	fire_deferred_events();
 
 	SDL_Event e;
@@ -653,6 +655,8 @@ void handle_events(void)
 				vm_stack_trace();
 			} else if (e.key.keysym.scancode == SDL_SCANCODE_F11) {
 				gfx_toggle_fullscreen();
+			} else if (e.key.keysym.scancode == SDL_SCANCODE_F12) {
+				rq_prof_toggle_pause();
 			} else if (e.key.keysym.scancode == SDL_SCANCODE_S) {
 				if (e.key.keysym.mod & (KMOD_LALT | KMOD_RALT)) {
 					screenshot_save();
@@ -765,4 +769,5 @@ void handle_events(void)
 	}
 	if (dbg_dap)
 		dbg_dap_handle_messages();
+	rq_prof_end(RQ_PROF_INPUT);
 }

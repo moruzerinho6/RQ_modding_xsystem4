@@ -27,6 +27,7 @@
 #include "scene.h"
 #include "vm/page.h"
 #include "vmSurface.h"
+#include "profile.h"
 
 struct child_surface {
 	int surface;
@@ -140,6 +141,7 @@ static void render_surface(int surface, int type, int current, Rectangle *rect, 
 
 static void vm_sprite_render(struct sprite *_sp)
 {
+	rq_prof_begin(RQ_PROF_SPRITE);
 	struct vm_sprite *sp = (struct vm_sprite*)_sp;
 	if (sp->current >= 0) {
 		int current = sp->current + (sp->anime ? sp->anime->current_frame : 0);
@@ -152,6 +154,8 @@ static void vm_sprite_render(struct sprite *_sp)
 			continue;
 		render_surface(child->surface, child->type, 0, &sp->rect, &child->pos);
 	}
+	rq_prof_end(RQ_PROF_SPRITE);
+	rq_prof_count(RQ_PROF_SPRITE);
 }
 
 static cJSON *vm_sprite_to_json(struct sprite *_sp, bool verbose)

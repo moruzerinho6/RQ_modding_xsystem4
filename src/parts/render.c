@@ -31,6 +31,7 @@
 #include "xsystem4.h"
 
 #include "parts_internal.h"
+#include "profile.h"
 
 static struct {
 	struct shader shader;
@@ -653,7 +654,10 @@ void parts_engine_render(possibly_unused struct sprite *_)
 
 void parts_sprite_render(struct sprite *sp)
 {
+	rq_prof_begin(RQ_PROF_SPRITE);
 	parts_render((struct parts*)sp);
+	rq_prof_end(RQ_PROF_SPRITE);
+	rq_prof_count(RQ_PROF_SPRITE);
 }
 
 static bool pe_dirty = false;

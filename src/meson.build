@@ -222,6 +222,11 @@ winsys = 'console'
 if get_option('buildtype').startswith('release')
     winsys = 'windows'
 endif
+if get_option('profile')
+    add_project_arguments('-DRQ_PROFILE', language : 'c')
+    xsystem4 += 'profile.c'
+    winsys = 'console'
+endif
 
 executable('xsystem4', xsystem4,
            dependencies : xsystem4_deps,

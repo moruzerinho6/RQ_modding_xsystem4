@@ -28,6 +28,7 @@
 #include "queue.h"
 #include "scene.h"
 #include "xsystem4.h"
+#include "profile.h"
 
 static int id_counter = 0;
 
@@ -75,6 +76,7 @@ void scene_unregister_sprite(struct sprite *sp)
 
 void scene_render(void)
 {
+	rq_prof_begin(RQ_PROF_SCENE);
 	gfx_clear();
 	if (wp.handle) {
 		Rectangle r = RECT(0, 0, wp.w, wp.h);
@@ -88,6 +90,7 @@ void scene_render(void)
 		else
 			WARNING("sprite in scene without render function");
 	}
+	rq_prof_end(RQ_PROF_SCENE);
 }
 
 int scene_set_wp(int cg_no) {

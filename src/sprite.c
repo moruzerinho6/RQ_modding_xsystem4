@@ -35,6 +35,7 @@
 #include "vm.h"
 #include "vm/page.h"
 #include "xsystem4.h"
+#include "profile.h"
 
 bool sact_dirty = true;
 
@@ -157,10 +158,14 @@ static void sprite_render(struct sprite *_sp)
 {
 	struct sact_sprite *sp = (struct sact_sprite*)_sp;
 	if (sp->plugin && sp->plugin->render) {
+		rq_prof_begin(RQ_PROF_SPRITE);
 		sp->plugin->render(sp);
+		rq_prof_end(RQ_PROF_SPRITE);
+		rq_prof_count(RQ_PROF_SPRITE);
 		return;
 	}
 
+	rq_prof_begin(RQ_PROF_SPRITE);
 	sprite_init_texture(sp);
 
 	switch (sp->draw_method) {
@@ -190,6 +195,8 @@ static void sprite_render(struct sprite *_sp)
 
 	if (sp->draw_method != DRAW_METHOD_NORMAL)
 		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+	rq_prof_end(RQ_PROF_SPRITE);
+	rq_prof_count(RQ_PROF_SPRITE);
 }
 
 struct texture *sprite_get_texture(struct sact_sprite *sp)
@@ -493,9 +500,11 @@ void sprite_bind_plugin(struct sact_sprite *sp, struct draw_plugin *plugin)
 
 void sprite_call_plugins(void)
 {
+	rq_prof_begin(RQ_PROF_PLUGIN);
 	struct sact_sprite *sp;
 	LIST_FOREACH(sp, &sprites_with_plugins, entry) {
 		if (sp->plugin->update)
 			sp->plugin->update(sp);
 	}
+	rq_prof_end(RQ_PROF_PLUGIN);
 }

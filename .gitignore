@@ -1,4 +1,6 @@
 build
+/build-profile
 *.ain
 .dir-locals.el
 /subprojects/cglm
+/subprojects/.wraplock

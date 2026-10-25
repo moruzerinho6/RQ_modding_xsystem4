@@ -43,6 +43,7 @@
 #include "vm.h"
 #include "vm/page.h"
 #include "xsystem4.h"
+#include "profile.h"
 
 static const char plugin_name[] = "DrawDungeon";
 
@@ -382,6 +383,8 @@ static void dungeon_render(struct sact_sprite *sp)
 	struct dungeon_context *ctx = (struct dungeon_context *)sp->plugin;
 	if (!ctx->loaded || !ctx->draw_enabled)
 		return;
+	rq_prof_begin(RQ_PROF_DUNGEON);
+	rq_prof_count(RQ_PROF_DUNGEON);
 
 	GLuint fbo = gfx_set_framebuffer(GL_DRAW_FRAMEBUFFER, &ctx->texture, 0, 0, ctx->texture.w, ctx->texture.h);
 	glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ctx->depth_buffer);
@@ -418,6 +421,7 @@ static void dungeon_render(struct sact_sprite *sp)
 
 	dungeon_renderer_run_post_processing(ctx->renderer, &ctx->texture, sprite_get_texture(sp));
 	sprite_dirty(sp);
+	rq_prof_end(RQ_PROF_DUNGEON);
 }
 
 static void neighbor_reveal(struct dungeon_context *ctx, int x, int y, int z)

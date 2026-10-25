@@ -25,6 +25,7 @@
 #include "asset_manager.h"
 #include "reign.h"
 #include "sact.h"
+#include "profile.h"
 
 #define BONE_TRANSFORMS_BINDING 0
 
@@ -1358,6 +1359,8 @@ void RE_render(struct sact_sprite *sp)
 	struct RE_renderer *r = plugin->renderer;
 	if (!r || plugin->suspended)
 		return;
+	rq_prof_begin(RQ_PROF_TAPIR);
+	rq_prof_count(RQ_PROF_TAPIR);
 
 	sprite_dirty(sp);
 	struct texture *texture = sprite_get_texture(sp);
@@ -1455,6 +1458,7 @@ void RE_render(struct sact_sprite *sp)
 	glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
 	gfx_reset_framebuffer(GL_DRAW_FRAMEBUFFER, fbo);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	rq_prof_end(RQ_PROF_TAPIR);
 }
 
 struct height_detector {

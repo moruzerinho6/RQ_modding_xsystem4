@@ -30,6 +30,7 @@
 #include "gfx/gfx.h"
 #include "gfx/private.h"
 #include "icon.h"
+#include "profile.h"
 #include "xsystem4.h"
 
 struct sdl_private sdl;
@@ -274,6 +275,7 @@ int gfx_init(void)
 	gfx_clear();
 	icon_init();
 	gfx_initialized = true;
+	rq_prof_init();
 	return 0;
 }
 
@@ -442,11 +444,14 @@ void gfx_swap(void)
 	};
 	gfx_render(&job);
 
+	rq_prof_begin(RQ_PROF_SWAP);
 	SDL_GL_SwapWindow(sdl.window);
+	rq_prof_end(RQ_PROF_SWAP);
 	glBindFramebuffer(GL_FRAMEBUFFER, main_surface_fb);
 	glViewport(0, 0, sdl.w, sdl.h);
 
 	gfx_update_frame_rate_counter();
+	rq_prof_frame();
 }
 
 void gfx_set_view(struct texture *t)
