@@ -246,11 +246,10 @@ float _gfx_render_text(Texture *dst, char *msg, struct text_render_metrics *tm)
 }
 
 /*
- * Fully-composited text-sprite cache. The FreeType glyph atlas already
- * caches raw rmaps; Quests hover still pays gfx_draw_glyph (dilate +
- * color) ~500 times per T_Quest@checkSelect. This stores the finished
- * cell (font/size/color/border) so repeats are a copy, or a no-op if
- * the same sprite still holds that cell.
+ * Fully-composited text-sprite cache. The first recapture still cost
+ * ~187 µs/call because SP_SetTextSprite allocated a new GPU texture
+ * before the lookup (AIN Create/Delete each glyph; skip never fired).
+ * Hits now bind the cached GL texture (unowned) — no alloc, no copy.
  */
 #define TEXT_CACHE_MAX 4096
 #define TEXT_CACHE_FNV 2166136261u
@@ -264,8 +263,6 @@ struct text_cache_key {
 	uint32_t bold_bits;
 	uint32_t edge_l, edge_u, edge_r, edge_d;
 	uint32_t scale_x, space_scale_x, font_spacing, text_x_scale;
-	int dst_w;
-	int dst_h;
 	uint8_t blend;
 	uint8_t advance_edges;
 };
@@ -279,11 +276,13 @@ struct text_cache_entry {
 };
 
 static struct hash_table *text_cache;
-static struct hash_table *text_sprite_last;
 static unsigned text_cache_entries;
 static uint64_t text_cache_hits;
 static uint64_t text_cache_misses;
 static uint64_t text_cache_skips;
+static uint64_t text_cache_hits_frame;
+static uint64_t text_cache_misses_frame;
+static uint64_t text_cache_skips_frame;
 #ifdef RQ_PROFILE
 static bool text_cache_announced;
 #endif
@@ -310,8 +309,7 @@ static uint32_t text_cache_fnv(uint32_t h, const void *data, size_t n)
 	return h;
 }
 
-static void text_cache_make_key(struct text_cache_key *k, const struct text_style *ts,
-			       bool blend, int w, int h)
+static void text_cache_make_key(struct text_cache_key *k, const struct text_style *ts, bool blend)
 {
 	memset(k, 0, sizeof(*k));
 	k->face = ts->face;
@@ -328,8 +326,6 @@ static void text_cache_make_key(struct text_cache_key *k, const struct text_styl
 	k->space_scale_x = text_cache_fbits(ts->space_scale_x);
 	k->font_spacing = text_cache_fbits(ts->font_spacing);
 	k->text_x_scale = text_cache_fbits(config.text_x_scale);
-	k->dst_w = w;
-	k->dst_h = h;
 	k->blend = blend ? 1 : 0;
 	k->advance_edges = gfx_text_advance_edges ? 1 : 0;
 }
@@ -350,12 +346,16 @@ static void text_cache_ensure(void)
 
 static void text_cache_note(bool hit, bool skip)
 {
-	if (skip)
+	if (skip) {
 		text_cache_skips++;
-	else if (hit)
+		text_cache_skips_frame++;
+	} else if (hit) {
 		text_cache_hits++;
-	else
+		text_cache_hits_frame++;
+	} else {
 		text_cache_misses++;
+		text_cache_misses_frame++;
+	}
 #ifdef RQ_PROFILE
 	if (!text_cache_announced && (text_cache_hits + text_cache_skips) == 1) {
 		fprintf(stderr,
@@ -368,14 +368,13 @@ static void text_cache_note(bool hit, bool skip)
 #endif
 }
 
-static struct text_cache_entry *text_cache_lookup(const char *msg, const struct text_style *ts,
-						 bool blend, int w, int h)
+static struct text_cache_entry *text_cache_lookup(const char *msg, const struct text_style *ts, bool blend)
 {
 	struct text_cache_key key;
-	if (!msg || !ts || w < 1 || h < 1)
+	if (!msg || !ts)
 		return NULL;
 	text_cache_ensure();
-	text_cache_make_key(&key, ts, blend, w, h);
+	text_cache_make_key(&key, ts, blend);
 	struct text_cache_entry *e = ht_get_int(text_cache, (int)text_cache_hash(&key, msg), NULL);
 	while (e) {
 		if (!memcmp(&e->key, &key, sizeof(key)) && e->msg && !strcmp(e->msg, msg))
@@ -396,12 +395,12 @@ static void text_cache_store(const char *msg, const struct text_style *ts, bool 
 		return;
 	if (text_cache_entries >= TEXT_CACHE_MAX)
 		return;
-	if (text_cache_lookup(msg, ts, blend, src->w, src->h))
+	if (text_cache_lookup(msg, ts, blend))
 		return;
 
 	text_cache_ensure();
 	e = xcalloc(1, sizeof(*e));
-	text_cache_make_key(&e->key, ts, blend, src->w, src->h);
+	text_cache_make_key(&e->key, ts, blend);
 	e->msg = xstrdup(msg);
 	e->advance = advance;
 	gfx_init_texture_rgba(&e->tex, src->w, src->h, COLOR(0, 0, 0, 0));
@@ -414,59 +413,31 @@ static void text_cache_store(const char *msg, const struct text_style *ts, bool 
 	text_cache_entries++;
 }
 
-static void text_cache_last_set(int sp_no, struct text_cache_entry *e)
+bool gfx_text_cache_get(const char *msg, const struct text_style *ts, bool blend, Texture **tex, float *advance)
 {
-	if (!text_sprite_last)
-		text_sprite_last = ht_create(1024);
-	ht_put_int(text_sprite_last, sp_no, NULL)->value = e;
-}
-
-static bool text_cache_cell_match(Texture *dst, const char *msg, struct text_style *ts, int *w, int *h)
-{
-	int cell_w, cell_h;
-	if (!dst || !msg || !ts)
+	struct text_cache_entry *e = text_cache_lookup(msg, ts, blend);
+	if (!e || !e->tex.handle)
 		return false;
-	cell_w = (int)ceilf(gfx_size_text(ts, msg));
-	cell_h = (int)ts->size;
-	if (cell_w < 1 || cell_h < 1)
-		return false;
-	if (dst->w != cell_w || dst->h != cell_h)
-		return false;
-	if (w)
-		*w = cell_w;
-	if (h)
-		*h = cell_h;
+	if (tex)
+		*tex = &e->tex;
+	if (advance)
+		*advance = e->advance;
 	return true;
 }
 
-bool gfx_text_cache_try_sprite(int sp_no, Texture *dst, const char *msg, struct text_style *ts,
-			      bool blend, bool reused)
+void gfx_text_cache_put(const char *msg, const struct text_style *ts, bool blend, Texture *src, float advance)
 {
-	struct text_cache_entry *e;
-	if (!dst || !dst->handle || !msg || !ts)
-		return false;
-	e = text_cache_lookup(msg, ts, blend, dst->w, dst->h);
-	if (!e)
-		return false;
-	if (reused && text_sprite_last && ht_get_int(text_sprite_last, sp_no, NULL) == e) {
-		text_cache_note(true, true);
-		return true;
-	}
-	gfx_copy_with_alpha_map(dst, 0, 0, &e->tex, 0, 0, e->tex.w, e->tex.h);
-	text_cache_last_set(sp_no, e);
-	text_cache_note(true, false);
-	return true;
+	text_cache_store(msg, ts, blend, src, advance);
 }
 
-void gfx_text_cache_store_sprite(int sp_no, Texture *dst, const char *msg, struct text_style *ts,
-				bool blend, float advance)
+void gfx_text_cache_note_hit(bool skip)
 {
-	struct text_cache_entry *e;
-	text_cache_store(msg, ts, blend, dst, advance);
+	text_cache_note(true, skip);
+}
+
+void gfx_text_cache_note_miss(void)
+{
 	text_cache_note(false, false);
-	e = text_cache_lookup(msg, ts, blend, dst ? dst->w : 0, dst ? dst->h : 0);
-	if (e)
-		text_cache_last_set(sp_no, e);
 }
 
 void gfx_text_cache_stats(uint64_t *hits, uint64_t *misses, uint64_t *skips, unsigned *entries)
@@ -479,6 +450,21 @@ void gfx_text_cache_stats(uint64_t *hits, uint64_t *misses, uint64_t *skips, uns
 		*skips = text_cache_skips;
 	if (entries)
 		*entries = text_cache_entries;
+}
+
+void gfx_text_cache_take_frame(uint64_t *hits, uint64_t *misses, uint64_t *skips, unsigned *entries)
+{
+	if (hits)
+		*hits = text_cache_hits_frame;
+	if (misses)
+		*misses = text_cache_misses_frame;
+	if (skips)
+		*skips = text_cache_skips_frame;
+	if (entries)
+		*entries = text_cache_entries;
+	text_cache_hits_frame = 0;
+	text_cache_misses_frame = 0;
+	text_cache_skips_frame = 0;
 }
 
 enum font_weight gfx_int_to_font_weight(int weight)
@@ -544,20 +530,15 @@ float gfx_render_textf(Texture *dst, float x, int y, char *msg, struct text_styl
 
 int gfx_render_text(Texture *dst, float x, int y, char *msg, struct text_style *ts, bool blend)
 {
-	int w, h;
 	struct text_cache_entry *e;
 
-	if (x == 0.0f && y == 0 && text_cache_cell_match(dst, msg, ts, &w, &h)) {
-		e = text_cache_lookup(msg, ts, blend, w, h);
-		if (e) {
+	if (x == 0.0f && y == 0 && dst) {
+		e = text_cache_lookup(msg, ts, blend);
+		if (e && e->tex.handle && e->tex.w == dst->w && e->tex.h == dst->h) {
 			gfx_copy_with_alpha_map(dst, 0, 0, &e->tex, 0, 0, e->tex.w, e->tex.h);
 			text_cache_note(true, false);
 			return lroundf(e->advance);
 		}
-		float adv = gfx_render_textf(dst, x, y, msg, ts, blend);
-		text_cache_store(msg, ts, blend, dst, adv);
-		text_cache_note(false, false);
-		return lroundf(adv);
 	}
 	return lroundf(gfx_render_textf(dst, x, y, msg, ts, blend));
 }

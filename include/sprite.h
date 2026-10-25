@@ -33,6 +33,8 @@ struct sact_sprite {
 	LIST_ENTRY(sact_sprite) entry;
 	// The sprite's texture (CG or solid color). Initialized lazily.
 	struct texture texture;
+	// Texture handle is owned by the text-sprite cache; do not glDelete.
+	bool texture_unowned;
 	// If no CG is attached to the sprite, the solid color to fill with.
 	SDL_Color color;
 	// Shader params
@@ -93,6 +95,7 @@ int sprite_set_cg_from_file(struct sact_sprite *sp, const char *path);
 int sprite_save_cg(struct sact_sprite *sp, const char *path);
 void sprite_init(struct sact_sprite *sp);
 void sprite_init_color(struct sact_sprite *sp, int w, int h, int r, int g, int b, int a);
+void sprite_bind_unowned_texture(struct sact_sprite *sp, struct texture *tex);
 void sprite_init_custom(struct sact_sprite *sp);
 void sprite_set_pos(struct sact_sprite *sp, int x, int y);
 void sprite_set_x(struct sact_sprite *sp, int x);

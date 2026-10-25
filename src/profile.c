@@ -282,7 +282,8 @@ void rq_prof_init(void)
 		"frame,t_ms,frame_ms,input_ms,plugin_ms,scene_ms,sprite_ms,"
 		"dungeon_ms,tapir_ms,swap_ms,sleep_ms,n_sleep,sleep_req_ms,"
 		"leftover_ms,leftover_other_ms,script_ms,hll_ms,hll_other_ms,n_hll,"
-		"chipmunk_sleep_ms,n_sprite,n_dungeon,n_tapir,vsync,ain,top_hll,top_hll_ms\n");
+		"chipmunk_sleep_ms,n_sprite,n_dungeon,n_tapir,vsync,ain,top_hll,top_hll_ms,"
+		"tc_hit,tc_skip,tc_miss,tc_entries\n");
 	fflush(out);
 	ain_log = fopen(ain_path, "w");
 	if (ain_log) {
@@ -307,7 +308,7 @@ void rq_prof_init(void)
 	if (hll_log)
 		fprintf(stderr, "[rq-prof] HLL breakdown %s (leftover > %.0f ms)\n",
 			hll_path, RQ_PROF_SLOW_MS);
-	fprintf(stderr, "[rq-prof] text-sprite cache on (hit/skip/miss in 60-frame lines)\n");
+	fprintf(stderr, "[rq-prof] text-sprite cache on (CSV tc_hit/skip/miss/entries; leftover hll text-cache row)\n");
 }
 
 void rq_prof_fini(void)
@@ -455,11 +456,29 @@ void rq_prof_frame(void)
 			copy_top_name(ain_name, sizeof(ain_name), stack);
 	}
 
+	uint64_t tc_hit = 0, tc_miss = 0, tc_skip = 0;
+	unsigned tc_entries = 0;
+	gfx_text_cache_take_frame(&tc_hit, &tc_miss, &tc_skip, &tc_entries);
+
 	if (leftover_other_ms > RQ_PROF_SLOW_MS) {
 		if (!stack[0])
 			vm_prof_ain_stack(stack, sizeof(stack));
 		ain_log_event("leftover", leftover_other_ms, 0, stack, top_name, top_ms);
 		write_hll_breakdown(leftover_other_ms, stack);
+		if (hll_log && !paused) {
+			char tc_stack[192];
+			snprintf(tc_stack, sizeof(tc_stack),
+				 "hit=%llu skip=%llu miss=%llu entries=%u",
+				 (unsigned long long)tc_hit, (unsigned long long)tc_skip,
+				 (unsigned long long)tc_miss, tc_entries);
+			fprintf(hll_log, "%.3f,", now_t_ms());
+			csv_quote(hll_log, "text-cache");
+			fprintf(hll_log, ",0.000,%llu,",
+				(unsigned long long)(tc_hit + tc_skip + tc_miss));
+			csv_quote(hll_log, tc_stack);
+			fputc('\n', hll_log);
+			fflush(hll_log);
+		}
 	}
 
 	if (!paused) {
@@ -493,7 +512,9 @@ void rq_prof_frame(void)
 		csv_quote(out, ain_name);
 		fputc(',', out);
 		csv_quote(out, top_name);
-		fprintf(out, ",%.3f\n", top_ms);
+		fprintf(out, ",%.3f,%llu,%llu,%llu,%u\n", top_ms,
+			(unsigned long long)tc_hit, (unsigned long long)tc_skip,
+			(unsigned long long)tc_miss, tc_entries);
 		if ((frame_no % 30) == 0)
 			fflush(out);
 		if ((frame_no % 60) == 0) {

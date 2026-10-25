@@ -164,9 +164,12 @@ float gfx_render_textf(Texture *dst, float x, int y, char *msg, struct text_styl
 void gfx_render_dash_text(Texture *dst, struct text_style *ts);
 
 /* Styled text-sprite cache (SP_SetTextSprite / cell-sized gfx_render_text). */
-bool gfx_text_cache_try_sprite(int sp_no, Texture *dst, const char *msg, struct text_style *ts, bool blend, bool reused);
-void gfx_text_cache_store_sprite(int sp_no, Texture *dst, const char *msg, struct text_style *ts, bool blend, float advance);
+bool gfx_text_cache_get(const char *msg, const struct text_style *ts, bool blend, Texture **tex, float *advance);
+void gfx_text_cache_put(const char *msg, const struct text_style *ts, bool blend, Texture *src, float advance);
+void gfx_text_cache_note_hit(bool skip);
+void gfx_text_cache_note_miss(void);
 void gfx_text_cache_stats(uint64_t *hits, uint64_t *misses, uint64_t *skips, unsigned *entries);
+void gfx_text_cache_take_frame(uint64_t *hits, uint64_t *misses, uint64_t *skips, unsigned *entries);
 void gfx_draw_text_to_amap(Texture *dst, int x, int y, char *text);
 void gfx_draw_text_to_pmap(Texture *dst, int x, int y, char *text);
 float gfx_size_char_unstyled(struct text_style *ts, const char *ch);

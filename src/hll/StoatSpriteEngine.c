@@ -126,24 +126,27 @@ bool StoatSpriteEngine_SP_SetTextSprite(int sp_no, struct string *text)
 	if (!sp)
 		return false;
 
-	bool reused = sp->texture.handle
-		&& sp->rect.w == w
-		&& sp->rect.h == h
-		&& sp->sp.has_alpha;
-	if (!reused) {
-		sp = sact_create_sprite(sp_no, w, h, 0, 0, 0, 0);
-		if (!sp)
-			return false;
-		sprite_get_texture(sp);
+	Texture *cached = NULL;
+	float adv = 0.0f;
+	if (gfx_text_cache_get(s, &text_sprite_ts, false, &cached, &adv)) {
+		/* AIN typically Create/Delete a temp glyph sprite every call, so
+		 * skip-if-same-sprite is dead. Bind the cached GL texture (no
+		 * alloc, no copy). DrawGraph reads it as src. */
+		bool already = sp->texture_unowned && sp->texture.handle == cached->handle;
+		sprite_bind_unowned_texture(sp, cached);
+		gfx_text_cache_note_hit(already);
+		return true;
 	}
 
-	if (!gfx_text_cache_try_sprite(sp_no, sprite_get_texture(sp), s, &text_sprite_ts, false, reused)) {
-		if (reused)
-			gfx_fill_with_alpha(&sp->texture, 0, 0, w, h, 0, 0, 0, 0);
-		/* Rasterize via gfx_render_textf so the cell cache is stored once. */
-		float adv = gfx_render_textf(&sp->texture, 0.0f, 0, s, &text_sprite_ts, false);
-		gfx_text_cache_store_sprite(sp_no, &sp->texture, s, &text_sprite_ts, false, adv);
-	}
+	sp = sact_create_sprite(sp_no, w, h, 0, 0, 0, 0);
+	if (!sp)
+		return false;
+	sprite_get_texture(sp);
+	adv = gfx_render_textf(&sp->texture, 0.0f, 0, s, &text_sprite_ts, false);
+	gfx_text_cache_put(s, &text_sprite_ts, false, &sp->texture, adv);
+	if (gfx_text_cache_get(s, &text_sprite_ts, false, &cached, &adv))
+		sprite_bind_unowned_texture(sp, cached);
+	gfx_text_cache_note_miss();
 	sprite_dirty(sp);
 	return true;
 }

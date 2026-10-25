@@ -50,10 +50,22 @@ void sprite_init(struct sact_sprite *sp)
 	sp->multiply_color = (SDL_Color){255,255,255,255};
 }
 
+static void sprite_drop_texture(struct sact_sprite *sp)
+{
+	if (sp->texture_unowned) {
+		sp->texture.handle = 0;
+		sp->texture.w = 0;
+		sp->texture.h = 0;
+		sp->texture_unowned = false;
+	} else {
+		gfx_delete_texture(&sp->texture);
+	}
+}
+
 void sprite_free(struct sact_sprite *sp)
 {
 	scene_unregister_sprite(&sp->sp);
-	gfx_delete_texture(&sp->texture);
+	sprite_drop_texture(sp);
 	gfx_delete_texture(&sp->text.texture);
 	if (sp->plugin) {
 		if (sp->plugin->free)
@@ -212,7 +224,7 @@ static cJSON *_sprite_to_json(struct sprite *sp, bool verbose)
 
 void sprite_set_cg(struct sact_sprite *sp, struct cg *cg)
 {
-	gfx_delete_texture(&sp->texture);
+	sprite_drop_texture(sp);
 	gfx_init_texture_with_cg(&sp->texture, cg);
 	sp->rect.w = cg->metrics.w;
 	sp->rect.h = cg->metrics.h;
@@ -235,7 +247,7 @@ void sprite_set_cg_2x(struct sact_sprite *sp, struct cg *cg)
 	int h = cg->metrics.h*2;
 
 	// upscale into sprite texture
-	gfx_delete_texture(&sp->texture);
+	sprite_drop_texture(sp);
 	if (cg->metrics.has_alpha) {
 		gfx_init_texture_rgba(&sp->texture, w, h, c);
 	} else {
@@ -308,10 +320,33 @@ void sprite_init_color(struct sact_sprite *sp, int w, int h, int r, int g, int b
 	sp->color = (SDL_Color) { .r = r, .g = g, .b = b, .a = (a >= 0 ? a : 255) };
 	sp->rect.w = w;
 	sp->rect.h = h;
-	gfx_delete_texture(&sp->texture);
+	sprite_drop_texture(sp);
 
 	sp->sp.has_pixel = true;
 	sp->sp.has_alpha = a >= 0;
+	sp->sp.render = sprite_render;
+	sp->sp.to_json = _sprite_to_json;
+	sprite_dirty(sp);
+}
+
+void sprite_bind_unowned_texture(struct sact_sprite *sp, struct texture *tex)
+{
+	if (!sp || !tex || !tex->handle)
+		return;
+	if (sp->texture_unowned && sp->texture.handle == tex->handle) {
+		sp->rect.w = tex->w;
+		sp->rect.h = tex->h;
+		sprite_dirty(sp);
+		return;
+	}
+	sprite_drop_texture(sp);
+	sp->texture = *tex;
+	sp->texture_unowned = true;
+	sp->color = (SDL_Color){ 0, 0, 0, 0 };
+	sp->rect.w = tex->w;
+	sp->rect.h = tex->h;
+	sp->sp.has_pixel = true;
+	sp->sp.has_alpha = true;
 	sp->sp.render = sprite_render;
 	sp->sp.to_json = _sprite_to_json;
 	sprite_dirty(sp);
