@@ -27,6 +27,7 @@
 #include "xsystem4.h"
 #include "debugger.h"
 #include "profile.h"
+#include "modloader.h"
 
 #ifndef M_PI
 #define M_PI (3.14159265358979323846)
@@ -206,11 +207,23 @@ static enum sact_keycode sdl_to_sact_button(int button)
 	}
 }
 
+bool key_is_down_raw(enum sact_keycode code)
+{
+	if (code < 0 || code >= VK_NR_KEYCODES) {
+		return false;
+	}
+	return key_state[code];
+}
+
 bool key_is_down(enum sact_keycode code)
 {
 	if (code < 0 || code >= VK_NR_KEYCODES) {
 		return false;
 	}
+#ifdef RQ_MODLOADER
+	if (rq_hud_block_mouse() && (code == VK_LBUTTON || code == VK_RBUTTON))
+		return false;
+#endif
 	return key_state[code];
 }
 

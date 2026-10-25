@@ -50,6 +50,11 @@ int g_rq_skip_sdl;
 static struct ain *g_ain;
 static lua_State *g_L;
 
+lua_State *rq_lua(void)
+{
+	return g_L;
+}
+
 void rq_log(const char *fmt, ...)
 {
 	char buf[1024];
@@ -567,16 +572,22 @@ static int l_find_funcs(lua_State *L)
 	return 1;
 }
 
-static int l_loot_preview(lua_State *L)
+static int l_loot_install(lua_State *L)
 {
 	int ok;
 	if (!g_ain)
 		return luaL_error(L, "AIN not loaded");
 	ok = rq_loot_install(g_ain);
 	if (!ok)
-		return luaL_error(L, "loot_preview install failed (see mods/rqmod.log)");
+		return luaL_error(L, "loot.install failed (see mods/rqmod.log)");
 	lua_pushboolean(L, 1);
 	return 1;
+}
+
+static void set_cfn(lua_State *L, const char *name, lua_CFunction fn)
+{
+	lua_pushcfunction(L, fn);
+	lua_setfield(L, -2, name);
 }
 
 static int l_patch_float(lua_State *L)
@@ -599,24 +610,51 @@ static int l_patch_float(lua_State *L)
 static void open_rq(lua_State *L)
 {
 	lua_newtable(L);
-	lua_pushcfunction(L, l_log);
-	lua_setfield(L, -2, "log");
-	lua_pushcfunction(L, l_dungeon_camera);
-	lua_setfield(L, -2, "dungeon_camera");
-	lua_pushcfunction(L, l_patch_float);
-	lua_setfield(L, -2, "patch_float");
-	lua_pushcfunction(L, l_skip_msgbox);
-	lua_setfield(L, -2, "skip_msgbox");
-	lua_pushcfunction(L, l_skip_sdl_msgbox);
-	lua_setfield(L, -2, "skip_sdl_msgbox");
-	lua_pushcfunction(L, l_find_funcs);
-	lua_setfield(L, -2, "find");
-	lua_pushcfunction(L, l_loot_preview);
-	lua_setfield(L, -2, "loot_preview");
+	set_cfn(L, "log", l_log);
+	set_cfn(L, "on_frame", rq_lua_on_frame);
 	lua_pushstring(L, g_rq_game_dir);
 	lua_setfield(L, -2, "game_dir");
 	lua_pushstring(L, g_rq_mods_dir);
 	lua_setfield(L, -2, "mods_dir");
+
+	lua_newtable(L);
+	set_cfn(L, "patch_float", l_patch_float);
+	set_cfn(L, "skip_msgbox", l_skip_msgbox);
+	set_cfn(L, "find", l_find_funcs);
+	lua_setfield(L, -2, "ain");
+
+	lua_newtable(L);
+	set_cfn(L, "camera", l_dungeon_camera);
+	set_cfn(L, "active", rq_lua_dungeon_active);
+	lua_setfield(L, -2, "dungeon");
+
+	lua_newtable(L);
+	set_cfn(L, "mouse", rq_lua_input_mouse);
+	set_cfn(L, "key", rq_lua_input_key);
+	lua_setfield(L, -2, "input");
+
+	lua_newtable(L);
+	set_cfn(L, "rect", rq_lua_hud_rect);
+	set_cfn(L, "text", rq_lua_hud_text);
+	set_cfn(L, "cg", rq_lua_hud_cg);
+	set_cfn(L, "hit", rq_lua_hud_hit);
+	set_cfn(L, "clicked", rq_lua_hud_clicked);
+	set_cfn(L, "block_game_input", rq_lua_hud_block);
+	set_cfn(L, "screen", rq_lua_hud_screen);
+	lua_setfield(L, -2, "hud");
+
+	lua_newtable(L);
+	set_cfn(L, "install", l_loot_install);
+	set_cfn(L, "list", rq_lua_loot_list);
+	lua_setfield(L, -2, "loot");
+
+	/* Aliases so camera-zoom / skip-network-popup stay unchanged. */
+	set_cfn(L, "dungeon_camera", l_dungeon_camera);
+	set_cfn(L, "patch_float", l_patch_float);
+	set_cfn(L, "skip_msgbox", l_skip_msgbox);
+	set_cfn(L, "skip_sdl_msgbox", l_skip_sdl_msgbox);
+	set_cfn(L, "find", l_find_funcs);
+
 	lua_setglobal(L, "rq");
 }
 

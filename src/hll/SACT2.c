@@ -38,6 +38,7 @@
 #include "vm/page.h"
 #include "dungeon/dungeon.h"
 #include "xsystem4.h"
+#include "modloader.h"
 #include "profile.h"
 
 static enum sprite_engine_type engine_type = UNINITIALIZED_SPRITE_ENGINE;
@@ -231,8 +232,18 @@ int sact_Update(void)
 	if (split)
 		t2 = SDL_GetPerformanceCounter();
 #endif
+#ifdef RQ_MODLOADER
+	{
+		int hud = rq_hud_tick();
+		if (hud)
+			scene_is_dirty = true;
+	}
+#endif
 	if (scene_is_dirty) {
 		scene_render();
+#ifdef RQ_MODLOADER
+		rq_hud_draw();
+#endif
 #ifdef RQ_PROFILE
 		if (split) {
 			t3 = SDL_GetPerformanceCounter();

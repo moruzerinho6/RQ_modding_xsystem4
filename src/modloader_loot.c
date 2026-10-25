@@ -1,7 +1,7 @@
 /* Copyright (C) 2026 Rance Quest modding fork
  *
- * Loot-lock + preview: roll chests once at place, skip the open roll,
- * no red-chest explosions, dungeon-store preview of Magnum + locked chests.
+ * Loot-lock: roll chests once at place, skip the open roll,
+ * no red-chest explosions. Preview UI is Lua (rq.hud + rq.loot.list).
  */
 
 #ifdef RQ_MODLOADER
@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#include "lua.h"
+#include "lauxlib.h"
 
 #include "system4.h"
 #include "system4/ain.h"
@@ -47,14 +50,10 @@
 #define SM_MAPTT 1
 #define SM_MAPTZ 2
 
-static struct ain *g_ain;
 static int g_on;
 static int g_fno_gen = -1;
 static int g_fno_exist = -1;
 static int g_fno_init = -1;
-static int g_fno_field = -1;
-static int g_fno_field_mag = -1;
-static int g_fno_iname = -1;
 static int g_gi_item = -1;
 static int g_gi_map = -1;
 static int g_gi_bmap = -1;
@@ -238,28 +237,6 @@ static int wrap_red(struct ain *ain, int red_fno, int chest_fno)
 	return 1;
 }
 
-static int wrap_store(struct ain *ain, int fno)
-{
-	int dup = ain_dup_function(ain, fno);
-	struct buffer out;
-	uint32_t j_skip;
-
-	buffer_init(&out, NULL, 0);
-	emit1(&out, FUNC, fno);
-	emit1(&out, SH_LOCALREF, 0);
-	emit1(&out, PUSH, 0);
-	emit0(&out, EQUALE);
-	j_skip = emit_ifz(&out);
-	emit1(&out, CALLSYS, VM_XSYS_LOOT_PREVIEW);
-	patch_j(&out, j_skip, ain);
-	emit1(&out, SH_LOCALREF, 0);
-	emit1(&out, CALLFUNC, dup);
-	emit0(&out, RETURN);
-	emit1(&out, ENDFUNC, fno);
-	commit_wrap(ain, fno, &out);
-	return 1;
-}
-
 static int wrap_quest_end(struct ain *ain, int fno)
 {
 	int dup = ain_dup_function(ain, fno);
@@ -298,14 +275,6 @@ static int item_get(int ii, int member)
 	if (!p || member < 0 || member >= p->nr_vars)
 		return 0;
 	return p->values[member].i;
-}
-
-static void item_set(int ii, int member, int v)
-{
-	struct page *p = item_page(ii);
-	if (!p || member < 0 || member >= p->nr_vars)
-		return;
-	p->values[member].i = v;
 }
 
 static int *map_cell(int member, int x, int y)
@@ -439,106 +408,22 @@ static int unid_cg(int ii)
 	return UNID_CG_WEAPON;
 }
 
-static void set_name(int ii, const char *utf8)
+static char *item_name_utf(int ii)
 {
-	int ret, slot;
-	char *sjis;
+	struct page *p = item_page(ii);
+	int slot;
 	struct string *s;
-	if (g_fno_iname < 0)
-		return;
-	sjis = utf2sjis(utf8, 0);
-	if (!sjis)
-		return;
-	s = make_string(sjis, strlen(sjis));
-	free(sjis);
-	slot = heap_alloc_string(s);
-	stack_push(ii);
-	stack_push(slot);
-	vm_call(g_fno_iname, -1);
-	ret = stack_pop().i;
-	if (heap_index_valid(ret))
-		heap_unref(ret);
-}
-
-static void copy_name(int dst, int src)
-{
-	struct page *p = item_page(src);
-	struct string *s;
-	int slot, ret;
-	if (!p || g_fno_iname < 0)
-		return;
+	char *utf;
+	if (!p)
+		return strdup("?");
 	slot = p->values[SI_NAME].i;
 	if (!string_index_valid(slot))
-		return;
+		return strdup("?");
 	s = heap_get_string(slot);
-	if (!s)
-		return;
-	stack_push(dst);
-	stack_push(vm_string_ref(s));
-	vm_call(g_fno_iname, -1);
-	ret = stack_pop().i;
-	if (heap_index_valid(ret))
-		heap_unref(ret);
-}
-
-static void prepare_preview(int ii, int *save_unid, int *save_cg, int *save_name_slot)
-{
-	int catalog, twin, seen;
-	struct page *p = item_page(ii);
-
-	*save_unid = item_get(ii, SI_UNID);
-	*save_cg = item_get(ii, SI_CG);
-	*save_name_slot = 0;
-	if (p) {
-		*save_name_slot = p->values[SI_NAME].i;
-		if (heap_index_valid(*save_name_slot))
-			heap_ref(*save_name_slot);
-	}
-	catalog = item_get(ii, SI_CATALOG);
-	twin = catalog_seen(catalog, ii);
-	seen = twin != 0;
-	if (seen) {
-		item_set(ii, SI_UNID, 0);
-		if (twin != ii) {
-			item_set(ii, SI_CG, item_get(twin, SI_CG));
-			copy_name(ii, twin);
-		}
-	} else {
-		item_set(ii, SI_UNID, 1);
-		item_set(ii, SI_CG, unid_cg(ii));
-		set_name(ii, UNID_NAME);
-	}
-}
-
-static void restore_preview(int ii, int save_unid, int save_cg, int save_name_slot)
-{
-	int ret;
-	item_set(ii, SI_UNID, save_unid);
-	item_set(ii, SI_CG, save_cg);
-	if (g_fno_iname >= 0 && heap_index_valid(save_name_slot) && string_index_valid(save_name_slot)) {
-		stack_push(ii);
-		stack_push(save_name_slot);
-		heap_ref(save_name_slot);
-		vm_call(g_fno_iname, -1);
-		ret = stack_pop().i;
-		if (heap_index_valid(ret))
-			heap_unref(ret);
-	}
-	if (heap_index_valid(save_name_slot))
-		heap_unref(save_name_slot);
-}
-
-static void show_card(int ii, int magnum)
-{
-	int su, sc, sn;
-	if (ii <= 0)
-		return;
-	prepare_preview(ii, &su, &sc, &sn);
-	if (magnum && g_fno_field_mag >= 0)
-		call_i(g_fno_field_mag, ii);
-	else
-		call_i(g_fno_field, ii);
-	restore_preview(ii, su, sc, sn);
+	if (!s || !s->text)
+		return strdup("?");
+	utf = sjis2utf(s->text, 0);
+	return utf ? utf : strdup("?");
 }
 
 static void loot_lock_tile(int x, int y, int lank)
@@ -609,24 +494,71 @@ static int loot_open(int encoded)
 	return ii;
 }
 
-static void loot_preview(void)
+static void push_item_row(lua_State *L, int ii, const char *source, int floor, int x, int y)
 {
-	int mag, x, y, b, saved_bmap;
+	int catalog, twin, seen, cg;
+	char *name;
+
+	lua_newtable(L);
+	lua_pushinteger(L, ii);
+	lua_setfield(L, -2, "id");
+	lua_pushstring(L, source);
+	lua_setfield(L, -2, "source");
+	lua_pushinteger(L, floor);
+	lua_setfield(L, -2, "floor");
+	lua_pushinteger(L, x);
+	lua_setfield(L, -2, "x");
+	lua_pushinteger(L, y);
+	lua_setfield(L, -2, "y");
+	catalog = item_get(ii, SI_CATALOG);
+	lua_pushinteger(L, catalog);
+	lua_setfield(L, -2, "catalog");
+	twin = catalog_seen(catalog, ii);
+	seen = twin != 0;
+	lua_pushboolean(L, seen);
+	lua_setfield(L, -2, "seen");
+	if (seen) {
+		int src = twin ? twin : ii;
+		cg = item_get(src, SI_CG);
+		name = item_name_utf(src);
+		lua_pushinteger(L, 0);
+		lua_setfield(L, -2, "overlay");
+	} else {
+		cg = unid_cg(ii);
+		name = strdup(UNID_NAME);
+		lua_pushinteger(L, 10403);
+		lua_setfield(L, -2, "overlay");
+	}
+	lua_pushinteger(L, cg);
+	lua_setfield(L, -2, "cg");
+	lua_pushstring(L, name ? name : UNID_NAME);
+	lua_setfield(L, -2, "name");
+	free(name);
+}
+
+int rq_loot_list(lua_State *L)
+{
+	int mag, x, y, b, saved_bmap, n = 0;
 	int *tt, *tz;
 	struct page *marr;
 
+	lua_newtable(L);
 	if (!g_on)
-		return;
+		return 1;
 	mag = magnum_id();
-	if (mag > 0 && item_get(mag, SI_EXIST) == 9)
-		show_card(mag, 1);
-
+	if (mag > 0 && item_get(mag, SI_EXIST) == 9) {
+		lua_pushinteger(L, ++n);
+		push_item_row(L, mag, "magnum", 0, 0, 0);
+		lua_settable(L, -3);
+	}
 	if (g_gi_bmap < 0 || g_gi_map < 0)
-		return;
+		return 1;
 	saved_bmap = global_get(g_gi_bmap).i;
 	marr = heap_get_page(global_get(g_gi_map).i);
-	if (!marr)
-		return;
+	if (!marr) {
+		global_set(g_gi_bmap, vm_int(saved_bmap), false);
+		return 1;
+	}
 	for (b = 1; b < marr->nr_vars && b <= MAP_BMAP_MAX; b++) {
 		global_set(g_gi_bmap, vm_int(b), false);
 		for (x = 1; x < MAP_DIM; x++) {
@@ -643,11 +575,19 @@ static void loot_preview(void)
 				ii = *tz - LOOT_ENCODE;
 				if (ii == mag)
 					continue;
-				show_card(ii, 0);
+				lua_pushinteger(L, ++n);
+				push_item_row(L, ii, "chest", b, x, y);
+				lua_settable(L, -3);
 			}
 		}
 	}
 	global_set(g_gi_bmap, vm_int(saved_bmap), false);
+	return 1;
+}
+
+int rq_lua_loot_list(lua_State *L)
+{
+	return rq_loot_list(L);
 }
 
 static void loot_clear(void)
@@ -688,9 +628,6 @@ int rq_loot_syscall(int code)
 		encoded = stack_pop().i;
 		stack_push(loot_open(encoded));
 		return 1;
-	case VM_XSYS_LOOT_PREVIEW:
-		loot_preview();
-		return 1;
 	case VM_XSYS_LOOT_CLEAR:
 		loot_clear();
 		return 1;
@@ -701,50 +638,44 @@ int rq_loot_syscall(int code)
 
 int rq_loot_install(struct ain *ain)
 {
-	int f_kotei, f_rand, f_gen, f_red, f_chest, f_store, f_end;
+	int f_kotei, f_rand, f_gen, f_red, f_chest, f_end;
 	int n = 0;
 
 	if (g_on)
 		return 1;
 	if (!ain)
 		return 0;
-	g_ain = ain;
 
 	f_kotei = find_fn(ain, "ＭＤ固定");
 	f_rand = find_fn(ain, "ＭＤランダム");
 	f_gen = find_fn(ain, "宝箱の中身生成");
 	f_red = find_fn(ain, "赤宝箱処理");
 	f_chest = find_fn(ain, "宝箱処理");
-	f_store = find_fn(ain, "Ｒ８クエスト倉庫");
 	f_end = find_fn(ain, "クエスト終了処理");
 	g_fno_exist = find_fn(ain, "Ｉ存在");
 	g_fno_init = find_fn(ain, "Ｉ初期化");
-	g_fno_field = find_fn(ain, "Ｒ８どこかからアイテム");
-	g_fno_field_mag = find_fn(ain, "Ｒ８どこかからアイテム／マグナム");
-	g_fno_iname = find_fn(ain, "Ｉ名前");
 	g_fno_gen = f_gen;
 	g_gi_item = find_global(ain, "Ｉ");
 	g_gi_map = find_global(ain, "Ｍ");
 	g_gi_bmap = find_global(ain, "◆ＢＭＡＰ");
 	g_gi_magnum = find_global(ain, "◆マグナムの宝物");
 
-	if (f_kotei < 0 || f_rand < 0 || f_gen < 0 || f_red < 0 || f_chest < 0 || f_store < 0) {
-		rq_log("loot-preview: missing AIN function (kotei=%d rand=%d gen=%d red=%d chest=%d store=%d)",
-		       f_kotei, f_rand, f_gen, f_red, f_chest, f_store);
+	if (f_kotei < 0 || f_rand < 0 || f_gen < 0 || f_red < 0 || f_chest < 0) {
+		rq_log("loot: missing AIN function (kotei=%d rand=%d gen=%d red=%d chest=%d)",
+		       f_kotei, f_rand, f_gen, f_red, f_chest);
 		return 0;
 	}
 	n += wrap_md_kotei(ain, f_kotei);
 	n += wrap_md_rand(ain, f_rand);
 	n += wrap_gen(ain, f_gen);
 	n += wrap_red(ain, f_red, f_chest);
-	n += wrap_store(ain, f_store);
 	if (f_end >= 0)
 		n += wrap_quest_end(ain, f_end);
+	rq_hud_install(ain);
 
 	g_on = 1;
-	rq_log("loot-preview: installed wraps=%d gen=%d exist=%d field=%d mag=%d itemG=%d mapG=%d magG=%d",
-	       n, g_fno_gen, g_fno_exist, g_fno_field, g_fno_field_mag,
-	       g_gi_item, g_gi_map, g_gi_magnum);
+	rq_log("loot: lock-roll wraps=%d gen=%d exist=%d itemG=%d mapG=%d magG=%d",
+	       n, g_fno_gen, g_fno_exist, g_gi_item, g_gi_map, g_gi_magnum);
 	return 1;
 }
 
