@@ -1,7 +1,8 @@
 /* Copyright (C) 2026 Rance Quest modding fork
  *
  * Loot-lock: roll chests once at place, skip the open roll,
- * no red-chest explosions. Preview UI is Lua (rq.hud + rq.loot.list).
+ * no red-chest explosions. Red fail-roll is re-exposed to Lua
+ * (rq.chest) without the explode path. Preview UI is Lua.
  */
 
 #ifdef RQ_MODLOADER
@@ -10,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -53,13 +55,28 @@
 #define SM_MAPTZ 2
 
 static int g_on;
+static int g_chest_wrapped;
 static int g_fno_gen = -1;
 static int g_fno_exist = -1;
 static int g_fno_init = -1;
+static int g_fno_chest = -1;
 static int g_gi_item = -1;
 static int g_gi_map = -1;
 static int g_gi_bmap = -1;
 static int g_gi_magnum = -1;
+static int g_red_base_pct = 30;
+static int g_attempt_ref = LUA_NOREF;
+static int g_result_ref = LUA_NOREF;
+static int g_rand_seeded;
+
+#define CHEST_KV 24
+static struct {
+	char key[32];
+	int val;
+	int used;
+} g_kv[CHEST_KV];
+
+static int *map_cell(int member, int x, int y);
 
 static void emit0(struct buffer *out, enum opcode op)
 {
@@ -224,19 +241,223 @@ static int wrap_gen(struct ain *ain, int fno)
 	return 1;
 }
 
+static uint16_t loot_rd16(const uint8_t *p)
+{
+	return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+static int32_t loot_rd32(const uint8_t *p)
+{
+	return (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+}
+
+static int loot_op_len(uint16_t op)
+{
+	switch (op) {
+	case PUSH:
+	case JUMP:
+	case IFZ:
+	case IFNZ:
+	case CALLFUNC:
+	case CALLSYS:
+	case SH_LOCALREF:
+		return 6;
+	case CALLHLL:
+		return 10;
+	default:
+		return 2;
+	}
+}
+
+/* First PUSH 2..100 in vanilla 赤宝箱処理 — typically the disarm %. */
+static int scan_red_pct(struct ain *ain, int fno)
+{
+	uint32_t start, end, ip;
+	int i, found = 0;
+
+	if (!ain || fno < 0 || fno >= ain->nr_functions)
+		return 0;
+	start = ain->functions[fno].address;
+	end = (uint32_t)ain->code_size;
+	for (i = 0; i < ain->nr_functions; i++) {
+		uint32_t a = ain->functions[i].address;
+		if (a > start && a < end)
+			end = a;
+	}
+	for (ip = start; ip + 6 <= end; ) {
+		uint16_t op = loot_rd16(ain->code + ip);
+		int len = loot_op_len(op);
+		if (op == PUSH) {
+			int v = loot_rd32(ain->code + ip + 2);
+			if (v >= 2 && v <= 100) {
+				found = v;
+				break;
+			}
+		}
+		if (len < 2)
+			len = 2;
+		ip += (uint32_t)len;
+	}
+	return found;
+}
+
 static int wrap_red(struct ain *ain, int red_fno, int chest_fno)
 {
 	struct buffer out;
+	uint32_t j_fail;
 
+	if (g_chest_wrapped)
+		return 1;
 	buffer_init(&out, NULL, 0);
 	emit1(&out, FUNC, red_fno);
 	emit1(&out, SH_LOCALREF, 0);
 	emit1(&out, SH_LOCALREF, 1);
+	emit1(&out, CALLSYS, VM_XSYS_CHEST_ATTEMPT);
+	j_fail = emit_ifz(&out);
+	emit1(&out, SH_LOCALREF, 0);
+	emit1(&out, SH_LOCALREF, 1);
 	emit1(&out, CALLFUNC, chest_fno);
+	patch_j(&out, j_fail, ain);
 	emit0(&out, RETURN);
 	emit1(&out, ENDFUNC, red_fno);
 	commit_wrap(ain, red_fno, &out);
+	g_chest_wrapped = 1;
+	g_fno_chest = chest_fno;
+	rq_log("chest: 赤宝箱処理 -> fail-roll then 宝箱処理 (chest fno=%d). Explode path removed.",
+	       chest_fno);
 	return 1;
+}
+
+static int kv_get(const char *key, int *ok)
+{
+	int i;
+	*ok = 0;
+	if (!key)
+		return 0;
+	for (i = 0; i < CHEST_KV; i++) {
+		if (g_kv[i].used && strcmp(g_kv[i].key, key) == 0) {
+			*ok = 1;
+			return g_kv[i].val;
+		}
+	}
+	return 0;
+}
+
+static void kv_set(const char *key, int val)
+{
+	int i, slot = -1;
+	if (!key || !*key)
+		return;
+	for (i = 0; i < CHEST_KV; i++) {
+		if (g_kv[i].used && strcmp(g_kv[i].key, key) == 0) {
+			g_kv[i].val = val;
+			return;
+		}
+		if (!g_kv[i].used && slot < 0)
+			slot = i;
+	}
+	if (slot < 0)
+		return;
+	snprintf(g_kv[slot].key, sizeof g_kv[slot].key, "%s", key);
+	g_kv[slot].val = val;
+	g_kv[slot].used = 1;
+}
+
+static int chest_id_at(int x, int y)
+{
+	int *tz = map_cell(SM_MAPTZ, x, y);
+	if (tz && *tz >= LOOT_ENCODE)
+		return *tz - LOOT_ENCODE;
+	return 0;
+}
+
+static void chest_push_info(lua_State *L, int x, int y, int id, int base)
+{
+	lua_newtable(L);
+	lua_pushinteger(L, x);
+	lua_setfield(L, -2, "x");
+	lua_pushinteger(L, y);
+	lua_setfield(L, -2, "y");
+	lua_pushinteger(L, id);
+	lua_setfield(L, -2, "id");
+	lua_pushinteger(L, base);
+	lua_setfield(L, -2, "base_pct");
+	lua_pushstring(L, "red");
+	lua_setfield(L, -2, "kind");
+}
+
+static int chest_lua_pct(int x, int y, int id, int base, int *explode)
+{
+	lua_State *L = rq_lua();
+	int pct = 100;
+
+	*explode = 0;
+	if (!L || g_attempt_ref == LUA_NOREF)
+		return pct;
+	lua_rawgeti(L, LUA_REGISTRYINDEX, g_attempt_ref);
+	chest_push_info(L, x, y, id, base);
+	if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+		rq_log("Chest open hook error: %s", lua_tostring(L, -1));
+		lua_pop(L, 1);
+		return pct;
+	}
+	if (lua_isnumber(L, -1)) {
+		pct = (int)lua_tonumber(L, -1);
+	} else if (lua_istable(L, -1)) {
+		lua_getfield(L, -1, "pct");
+		if (lua_isnumber(L, -1))
+			pct = (int)lua_tonumber(L, -1);
+		lua_pop(L, 1);
+		lua_getfield(L, -1, "explode");
+		*explode = lua_toboolean(L, -1);
+		lua_pop(L, 1);
+	}
+	lua_pop(L, 1);
+	if (pct < 0)
+		pct = 0;
+	if (pct > 100)
+		pct = 100;
+	return pct;
+}
+
+static void chest_lua_result(int x, int y, int id, int base, int pct, int rolled, int success)
+{
+	lua_State *L = rq_lua();
+	if (!L || g_result_ref == LUA_NOREF)
+		return;
+	lua_rawgeti(L, LUA_REGISTRYINDEX, g_result_ref);
+	chest_push_info(L, x, y, id, base);
+	lua_pushinteger(L, pct);
+	lua_setfield(L, -2, "pct");
+	lua_pushinteger(L, rolled);
+	lua_setfield(L, -2, "rolled");
+	lua_pushboolean(L, success);
+	lua_setfield(L, -2, "success");
+	if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+		rq_log("Chest result hook error: %s", lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
+}
+
+static int chest_attempt(int x, int y)
+{
+	int id, explode = 0, pct, rolled, success;
+
+	if (!g_rand_seeded) {
+		srand((unsigned)time(NULL));
+		g_rand_seeded = 1;
+	}
+	id = chest_id_at(x, y);
+	pct = chest_lua_pct(x, y, id, g_red_base_pct, &explode);
+	rolled = rand() % 100;
+	success = rolled < pct;
+	if (explode && !success)
+		rq_log("Chest fail at (%d,%d): explode requested, ignored (no-explode stays on)", x, y);
+	chest_lua_result(x, y, id, g_red_base_pct, pct, rolled, success);
+	if (g_rq_verbose || g_rq_terminal)
+		rq_log("Chest (%d,%d) id=%d chance %d%% roll %d -> %s",
+		       x, y, id, pct, rolled, success ? "open" : "fail");
+	return success;
 }
 
 static int wrap_quest_end(struct ain *ain, int fno)
@@ -699,6 +920,11 @@ int rq_loot_install(struct ain *ain)
 	n += wrap_md_kotei(ain, f_kotei);
 	n += wrap_md_rand(ain, f_rand);
 	n += wrap_gen(ain, f_gen);
+	if (!g_chest_wrapped) {
+		int scanned = scan_red_pct(ain, f_red);
+		if (scanned > 0)
+			g_red_base_pct = scanned;
+	}
 	n += wrap_red(ain, f_red, f_chest);
 	if (f_end >= 0)
 		n += wrap_quest_end(ain, f_end);
@@ -707,7 +933,94 @@ int rq_loot_install(struct ain *ain)
 	g_on = 1;
 	rq_log("loot: lock-roll wraps=%d gen=%d exist=%d itemG=%d mapG=%d magG=%d",
 	       n, g_fno_gen, g_fno_exist, g_gi_item, g_gi_map, g_gi_magnum);
+	rq_log("loot: red fail-roll re-exposed (vanilla base %d%%). No hook = always open. No explode.",
+	       g_red_base_pct);
 	return 1;
+}
+
+int rq_chest_install(struct ain *ain)
+{
+	int f_red, f_chest, scanned;
+
+	if (!ain)
+		return 0;
+	f_red = find_fn(ain, "赤宝箱処理");
+	f_chest = find_fn(ain, "宝箱処理");
+	if (f_red < 0 || f_chest < 0) {
+		rq_log("chest: missing AIN (red=%d chest=%d)", f_red, f_chest);
+		return 0;
+	}
+	if (g_gi_item < 0)
+		g_gi_item = find_global(ain, "Ｉ");
+	if (g_gi_map < 0)
+		g_gi_map = find_global(ain, "Ｍ");
+	if (g_gi_bmap < 0)
+		g_gi_bmap = find_global(ain, "◆ＢＭＡＰ");
+	if (g_gi_magnum < 0)
+		g_gi_magnum = find_global(ain, "◆マグナムの宝物");
+	if (!g_chest_wrapped) {
+		scanned = scan_red_pct(ain, f_red);
+		if (scanned > 0)
+			g_red_base_pct = scanned;
+		wrap_red(ain, f_red, f_chest);
+	}
+	rq_log("chest: fail-roll wrap ready, vanilla base %d%%, no explode (Lua sets open %%)",
+	       g_red_base_pct);
+	return 1;
+}
+
+int rq_chest_syscall(int code)
+{
+	int x, y;
+
+	if ((enum vm_extra_syscall)code != VM_XSYS_CHEST_ATTEMPT)
+		return 0;
+	y = stack_pop().i;
+	x = stack_pop().i;
+	stack_push(chest_attempt(x, y) ? 1 : 0);
+	return 1;
+}
+
+int rq_lua_chest_on_attempt(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+	if (g_attempt_ref != LUA_NOREF)
+		luaL_unref(L, LUA_REGISTRYINDEX, g_attempt_ref);
+	lua_pushvalue(L, 1);
+	g_attempt_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	return 0;
+}
+
+int rq_lua_chest_on_result(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+	if (g_result_ref != LUA_NOREF)
+		luaL_unref(L, LUA_REGISTRYINDEX, g_result_ref);
+	lua_pushvalue(L, 1);
+	g_result_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	return 0;
+}
+
+int rq_lua_chest_get(lua_State *L)
+{
+	const char *key = luaL_checkstring(L, 1);
+	int ok, v;
+
+	v = kv_get(key, &ok);
+	if (!ok)
+		lua_pushnil(L);
+	else
+		lua_pushinteger(L, v);
+	return 1;
+}
+
+int rq_lua_chest_set(lua_State *L)
+{
+	const char *key = luaL_checkstring(L, 1);
+	int val = (int)luaL_checkinteger(L, 2);
+
+	kv_set(key, val);
+	return 0;
 }
 
 #endif /* RQ_MODLOADER */

@@ -245,7 +245,14 @@ if get_option('modloader')
                              c_args : ['-DMAKE_LIB', '-Wno-unused-parameter',
                                        '-Wno-implicit-fallthrough'],
                              include_directories : lua_inc)
-    xsystem4 += ['modloader.c', 'modloader_agent.c', 'modloader_loot.c', 'modloader_hud.c']
+    py = find_program('python3', 'python', required: true)
+    rq_stamp = custom_target(
+        'rq_build_stamp_c',
+        output: 'rq_build_stamp.c',
+        command: [py, meson.current_source_dir() / 'gen_build_stamp.py', '@OUTPUT@'],
+        build_always_stale: true)
+    xsystem4 += ['modloader.c', 'modloader_agent.c', 'modloader_loot.c',
+                 'modloader_hud.c', rq_stamp]
     exe_inc += lua_inc
     exe_link += lua_lib
 endif

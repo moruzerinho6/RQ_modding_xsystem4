@@ -30,6 +30,7 @@
 #include "gfx/gfx.h"
 #include "gfx/private.h"
 #include "icon.h"
+#include "modloader.h"
 #include "profile.h"
 #include "xsystem4.h"
 
@@ -185,7 +186,7 @@ static void set_window_title(void)
 {
 	char title[1024] = { [1023] = 0 };
 	char *game_name = sjis2utf(config.game_name, 0);
-	snprintf(title, 1023, "%s - XSystem4", game_name);
+	rq_window_title(title, sizeof title, game_name);
 	free(game_name);
 
 	SDL_SetWindowTitle(sdl.window, title);

@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <ctype.h>
+#include <time.h>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -84,6 +85,64 @@ void rq_log_tag(const char *tag, const char *fmt, ...)
 	va_start(ap, fmt);
 	rq_vlog(tag, fmt, ap);
 	va_end(ap);
+}
+
+void rq_format_sp_now(char *buf, size_t n)
+{
+#ifdef _WIN32
+	SYSTEMTIME utc, sp;
+	TIME_ZONE_INFORMATION tzi;
+
+	if (!buf || !n)
+		return;
+	memset(&tzi, 0, sizeof tzi);
+	/* UTC = local + bias; America/Sao_Paulo is UTC-3 (no DST since 2019). */
+	tzi.Bias = 180;
+	GetSystemTime(&utc);
+	if (!SystemTimeToTzSpecificLocalTime(&tzi, &utc, &sp))
+		sp = utc;
+	snprintf(buf, n, "%02d/%02d/%04d %02d:%02d",
+		 (int)sp.wDay, (int)sp.wMonth, (int)sp.wYear,
+		 (int)sp.wHour, (int)sp.wMinute);
+#else
+	time_t t = time(NULL);
+	struct tm tm;
+	t -= 3 * 3600;
+	gmtime_r(&t, &tm);
+	snprintf(buf, n, "%02d/%02d/%04d %02d:%02d",
+		 tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900,
+		 tm.tm_hour, tm.tm_min);
+#endif
+}
+
+void rq_window_title(char *buf, size_t n, const char *game_utf)
+{
+	const char *game = (game_utf && *game_utf) ? game_utf : "Rance Quest";
+	const char *stamp = rq_build_stamp();
+	if (!buf || !n)
+		return;
+	if (stamp && *stamp)
+		snprintf(buf, n, "%s - XSystem4 [RQ_modding] - Build %s", game, stamp);
+	else
+		snprintf(buf, n, "%s - XSystem4 [RQ_modding]", game);
+}
+
+static void rq_print_banner(void)
+{
+	char opened[32];
+	char title[256];
+	const char *stamp = rq_build_stamp();
+
+	rq_window_title(title, sizeof title, "Rance Quest");
+	rq_format_sp_now(opened, sizeof opened);
+	fprintf(stderr, "%s\n", title);
+	fprintf(stderr, "Opened %s\n", opened);
+	fflush(stderr);
+	if (g_rq_log) {
+		fprintf(g_rq_log, "%s\nOpened %s\n", title, opened);
+		fflush(g_rq_log);
+	}
+	(void)stamp;
 }
 
 #ifdef _WIN32
@@ -667,6 +726,18 @@ static int l_loot_install(lua_State *L)
 	return 1;
 }
 
+static int l_chest_install(lua_State *L)
+{
+	int ok;
+	if (!g_ain)
+		return luaL_error(L, "AIN not loaded");
+	ok = rq_chest_install(g_ain);
+	if (!ok)
+		return luaL_error(L, "chest.install failed (see mods/rqmod.log)");
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static void set_cfn(lua_State *L, const char *name, lua_CFunction fn)
 {
 	lua_pushcfunction(L, fn);
@@ -733,6 +804,14 @@ static void open_rq(lua_State *L)
 	set_cfn(L, "install", l_loot_install);
 	set_cfn(L, "list", rq_lua_loot_list);
 	lua_setfield(L, -2, "loot");
+
+	lua_newtable(L);
+	set_cfn(L, "install", l_chest_install);
+	set_cfn(L, "on_attempt", rq_lua_chest_on_attempt);
+	set_cfn(L, "on_result", rq_lua_chest_on_result);
+	set_cfn(L, "get", rq_lua_chest_get);
+	set_cfn(L, "set", rq_lua_chest_set);
+	lua_setfield(L, -2, "chest");
 
 	/* Aliases so camera-zoom / skip-network-popup stay unchanged. */
 	set_cfn(L, "dungeon_camera", l_dungeon_camera);
@@ -960,6 +1039,8 @@ void rq_mods_early_init(void)
 		snprintf(logpath, sizeof logpath, "%s\\rqmod.log", g_rq_mods_dir);
 		g_rq_log = fopen(logpath, "w");
 	}
+	if (g_rq_terminal)
+		rq_print_banner();
 	rq_log("Config: terminal %s, verbose %s, profiling off unless a profile flag is on",
 	       g_rq_terminal ? "on (this console)" : "off",
 	       g_rq_verbose ? "on" : "off");

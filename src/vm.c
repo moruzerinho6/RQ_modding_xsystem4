@@ -801,7 +801,8 @@ static void system_call(enum syscall_code code)
 			break;
 		default:
 #ifdef RQ_MODLOADER
-			if (rq_loot_syscall(code) || rq_hud_syscall(code))
+			if (rq_loot_syscall(code) || rq_hud_syscall(code)
+			    || rq_chest_syscall(code))
 				break;
 #endif
 			VM_ERROR("Unimplemented syscall: 0x%X", code);
