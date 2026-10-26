@@ -22,6 +22,8 @@
 
 #include "system4.h"
 #include "system4/archive.h"
+#include "system4/file.h"
+#include "system4/little_endian.h"
 #include "system4/utfsjis.h"
 
 #include "asset_manager.h"
@@ -97,6 +99,61 @@ static struct mixer *mixers = NULL;
 static int nr_mixers = 0;
 
 static SDL_AudioDeviceID audio_device = 0;
+static bool mixer_persist_ready = false;
+
+static void mixer_save_volumes(void)
+{
+	if (!mixer_persist_ready || !config.save_dir)
+		return;
+	int n = mixer_get_numof();
+	if (n <= 0 || n > 64)
+		return;
+	size_t len = 2 + (size_t)n * 3;
+	uint8_t *buf = xmalloc(len);
+	buf[0] = 0;
+	buf[1] = (uint8_t)n;
+	size_t off = 2;
+	for (int i = 0; i < n; i++) {
+		int vol = clamp(0, 100, (int)(mixers[i].mixer.gain * 100.0f + 0.5f));
+		LittleEndian_putW(buf, (int)off, (uint16_t)vol);
+		off += 2;
+		buf[off++] = mixers[i].muted ? 1 : 0;
+	}
+	char *path = savedir_path("Volume.sav");
+	file_write(path, buf, len);
+	free(path);
+	free(buf);
+}
+
+static void mixer_load_volumes(void)
+{
+	if (!config.save_dir)
+		return;
+	char *path = savedir_path("Volume.sav");
+	size_t len = 0;
+	uint8_t *buf = file_read(path, &len);
+	free(path);
+	if (!buf || len < 5) {
+		free(buf);
+		return;
+	}
+	int n = buf[1];
+	if (buf[0] != 0 || n <= 0 || 2 + n * 3 > (int)len) {
+		free(buf);
+		return;
+	}
+	if (n > mixer_get_numof())
+		n = mixer_get_numof();
+	size_t off = 2;
+	for (int i = 0; i < n; i++) {
+		int vol = LittleEndian_getW(buf, (int)off);
+		off += 2;
+		int mute = buf[off++];
+		mixers[i].mixer.gain = clamp(0.0f, 1.0f, (float)clamp(0, 100, vol) / 100.0f);
+		mixers[i].muted = !!mute;
+	}
+	free(buf);
+}
 
 /*
  * The SDL2 audio callback.
@@ -685,7 +742,10 @@ void mixer_init(void)
 	if (config.wai_path)
 		wai_load(config.wai_path);
 
-	// initialize SDL audio
+	mixer_load_volumes();
+	mixer_persist_ready = true;
+
+	// initialize SDL audio (saved Volume.sav already applied)
 	SDL_AudioSpec have;
 	SDL_AudioSpec want = {
 		.format = AUDIO_F32,
@@ -739,6 +799,7 @@ int mixer_set_volume(int n, int volume)
 	SDL_LockAudioDevice(audio_device);
 	mixers[n].mixer.gain = clamp(0.0f, 1.0f, (float)volume / 100.0f);
 	SDL_UnlockAudioDevice(audio_device);
+	mixer_save_volumes();
 	return 1;
 }
 int mixer_get_mute(int n, int *mute)
@@ -754,6 +815,7 @@ int mixer_set_mute(int n, int mute)
 	if (n < 0 || n >= config.mixer_nr_channels)
 		return 0;
 	mixers[n].muted = !!mute;
+	mixer_save_volumes();
 	return 1;
 }
 

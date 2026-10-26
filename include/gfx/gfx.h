@@ -84,6 +84,22 @@ void gfx_update_screen_scale(void);
 void gfx_set_wait_vsync(bool wait);
 float gfx_get_frame_rate(void);
 
+enum gfx_scaling_type {
+	GFX_SCALE_STANDARD = 0,
+	GFX_SCALE_BICUBIC = 1,
+	GFX_SCALE_NEAREST = 2,
+	GFX_SCALE_LANCZOS = 3,
+	GFX_SCALE_XBRZ = 4,
+	GFX_SCALE_COUNT
+};
+
+void gfx_set_scaling_type(int type);
+int gfx_get_scaling_type(void);
+const char *gfx_scaling_name(int type);
+int gfx_scaling_from_name(const char *name);
+void gfx_get_window_pos_size(int *x, int *y, int *w, int *h);
+bool gfx_handle_syscommand(unsigned cmd);
+
 void gfx_load_shader(struct shader *dst, const char *vertex_shader_path, const char *fragment_shader_path);
 GLuint gfx_load_shader_file(const char *path, GLenum type, const char *defines);
 

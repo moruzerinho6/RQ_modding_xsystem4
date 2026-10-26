@@ -18,6 +18,8 @@
 #include <assert.h>
 
 #include "system4/ain.h"
+#include "system4/file.h"
+#include "system4/little_endian.h"
 #include "system4/string.h"
 #include "system4/utfsjis.h"
 
@@ -29,7 +31,6 @@
 #include "vm.h"
 #include "xsystem4.h"
 #include "hll.h"
-#include "system4/file.h"
 
 static int SystemService_GetMixerName(int n, struct string **name)
 {
@@ -120,8 +121,11 @@ enum window_settings_asect_ratio {
 };
 
 enum window_settings_scaling_type {
-	SCALING_NORMAL,
-	SCALING_BICUBIC,
+	SCALING_STANDARD = 0,
+	SCALING_BICUBIC = 1,
+	SCALING_NEAREST = 2,
+	SCALING_LANCZOS = 3,
+	SCALING_XBRZ = 4,
 };
 
 struct window_settings {
@@ -136,7 +140,7 @@ struct window_settings {
 
 static struct window_settings window_settings = {
 	.aspect_ratio = ASPECT_RATIO_NORMAL,
-	.scaling_type = SCALING_NORMAL,
+	.scaling_type = SCALING_STANDARD,
 	.wait_vsync = false,
 	.record_pos_size = false,
 	.minimize_by_full_screen_inactive = true,
@@ -154,25 +158,100 @@ enum window_settings_id {
 	WINDOW_SETTINGS_CLOSE_GAME_CONFIRM = 6,
 };
 
+static int clamp_scaling(int type)
+{
+	if (type < SCALING_STANDARD || type > SCALING_XBRZ)
+		return SCALING_STANDARD;
+	return type;
+}
+
+static void apply_scaling(void)
+{
+	gfx_set_scaling_type(window_settings.scaling_type);
+}
+
+static void save_window_settings_sav(void)
+{
+	uint8_t buf[48];
+	memset(buf, 0, sizeof buf);
+	memcpy(buf, "AWS", 3);
+	LittleEndian_putDW(buf, 4, 3);
+	LittleEndian_putDW(buf, 8, window_settings.aspect_ratio);
+	LittleEndian_putDW(buf, 12, window_settings.scaling_type == SCALING_BICUBIC ? 1 : 0);
+	if (window_settings.scaling_type > SCALING_BICUBIC)
+		LittleEndian_putDW(buf, 12, 1);
+	LittleEndian_putDW(buf, 16, window_settings.wait_vsync ? 1 : 0);
+	LittleEndian_putDW(buf, 20, window_settings.record_pos_size ? 1 : 0);
+	LittleEndian_putDW(buf, 24, window_settings.minimize_by_full_screen_inactive ? 1 : 0);
+	LittleEndian_putDW(buf, 28, 0);
+	int x = 0, y = 0, w = config.view_width, h = config.view_height;
+	gfx_get_window_pos_size(&x, &y, &w, &h);
+	LittleEndian_putDW(buf, 32, (uint32_t)x);
+	LittleEndian_putDW(buf, 36, (uint32_t)y);
+	LittleEndian_putDW(buf, 40, (uint32_t)w);
+	LittleEndian_putDW(buf, 44, (uint32_t)h);
+	char *path = savedir_path("WindowSetting.sav");
+	file_write(path, buf, sizeof buf);
+	free(path);
+}
+
 static void save_window_settings(void)
 {
 	cJSON *root = cJSON_CreateObject();
 	cJSON_AddBoolToObject(root, "wait_vsync", window_settings.wait_vsync);
+	cJSON_AddNumberToObject(root, "scaling_type", window_settings.scaling_type);
+	cJSON_AddStringToObject(root, "scaling", gfx_scaling_name(window_settings.scaling_type));
+	cJSON *opts = cJSON_CreateArray();
+	cJSON_AddItemToArray(opts, cJSON_CreateString("standard"));
+	cJSON_AddItemToArray(opts, cJSON_CreateString("bicubic"));
+	cJSON_AddItemToArray(opts, cJSON_CreateString("nearest"));
+	cJSON_AddItemToArray(opts, cJSON_CreateString("lanczos"));
+	cJSON_AddItemToArray(opts, cJSON_CreateString("xbrz"));
+	cJSON_AddItemToObject(root, "scaling_options", opts);
 	save_json("WindowSetting.json", root);
 	cJSON_Delete(root);
+	save_window_settings_sav();
+}
+
+static void load_window_settings_sav(void)
+{
+	char *path = savedir_path("WindowSetting.sav");
+	size_t len = 0;
+	uint8_t *buf = file_read(path, &len);
+	free(path);
+	if (!buf || len < 32 || memcmp(buf, "AWS", 3) != 0) {
+		free(buf);
+		return;
+	}
+	window_settings.aspect_ratio = LittleEndian_getDW(buf, 8);
+	window_settings.scaling_type = clamp_scaling(LittleEndian_getDW(buf, 12));
+	window_settings.wait_vsync = LittleEndian_getDW(buf, 16) != 0;
+	window_settings.record_pos_size = LittleEndian_getDW(buf, 20) != 0;
+	window_settings.minimize_by_full_screen_inactive = LittleEndian_getDW(buf, 24) != 0;
+	gfx_set_wait_vsync(window_settings.wait_vsync);
+	free(buf);
 }
 
 static void load_window_settings(void)
 {
+	load_window_settings_sav();
 	cJSON *root = load_json("WindowSetting.json");
-	if (!root)
-		return;
-	cJSON *v;
-	if ((v = cJSON_GetObjectItem(root, "wait_vsync"))) {
-		window_settings.wait_vsync = cJSON_IsTrue(v);
-		gfx_set_wait_vsync(window_settings.wait_vsync);
+	if (root) {
+		cJSON *v;
+		if ((v = cJSON_GetObjectItem(root, "wait_vsync"))) {
+			window_settings.wait_vsync = cJSON_IsTrue(v);
+			gfx_set_wait_vsync(window_settings.wait_vsync);
+		}
+		if ((v = cJSON_GetObjectItem(root, "scaling")) && cJSON_IsString(v) && v->valuestring) {
+			int t = gfx_scaling_from_name(v->valuestring);
+			if (t >= 0)
+				window_settings.scaling_type = t;
+		} else if ((v = cJSON_GetObjectItem(root, "scaling_type")) && cJSON_IsNumber(v)) {
+			window_settings.scaling_type = clamp_scaling(v->valueint);
+		}
+		cJSON_Delete(root);
 	}
-	cJSON_Delete(root);
+	apply_scaling();
 }
 
 static bool SystemService_SetWindowSetting(int type, int value)
@@ -182,7 +261,8 @@ static bool SystemService_SetWindowSetting(int type, int value)
 		window_settings.aspect_ratio = value;
 		break;
 	case WINDOW_SETTINGS_SCALING_TYPE:
-		window_settings.scaling_type = value;
+		window_settings.scaling_type = clamp_scaling(value);
+		apply_scaling();
 		break;
 	case WINDOW_SETTINGS_WAIT_VSYNC:
 		window_settings.wait_vsync = value;
@@ -416,6 +496,13 @@ static void SystemService_GetSystemBufferName(struct string **text) {
 }
 
 static void SystemService_PreLink(void);
+
+void rq_notify_scaling_from_menu(int type)
+{
+	window_settings.scaling_type = clamp_scaling(type);
+	apply_scaling();
+	save_window_settings();
+}
 
 static void SystemService_ModuleInit(void)
 {

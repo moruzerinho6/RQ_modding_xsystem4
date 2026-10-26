@@ -29,6 +29,7 @@
 
 #include "gfx/gfx.h"
 #include "gfx/private.h"
+#include "win32_ui.h"
 #include "icon.h"
 #include "modloader.h"
 #include "profile.h"
@@ -65,6 +66,66 @@ static mat4 world_view_transform = MAT4(
 	0, 0, 0,  1);
 
 static struct shader default_shader;
+static struct shader present_bicubic;
+static struct shader present_lanczos;
+static struct shader present_xbrz;
+static GLint loc_bicubic_tex_size = -1;
+static GLint loc_lanczos_tex_size = -1;
+static GLint loc_xbrz_tex_size = -1;
+static int scaling_type = GFX_SCALE_STANDARD;
+
+static const char *scaling_names[GFX_SCALE_COUNT] = {
+	"standard", "bicubic", "nearest", "lanczos", "xbrz"
+};
+
+const char *gfx_scaling_name(int type)
+{
+	if (type < 0 || type >= GFX_SCALE_COUNT)
+		return scaling_names[0];
+	return scaling_names[type];
+}
+
+int gfx_scaling_from_name(const char *name)
+{
+	if (!name)
+		return -1;
+	for (int i = 0; i < GFX_SCALE_COUNT; i++) {
+		if (!SDL_strcasecmp(scaling_names[i], name))
+			return i;
+	}
+	if (!SDL_strcasecmp(name, "bilinear") || !SDL_strcasecmp(name, "normal"))
+		return GFX_SCALE_STANDARD;
+	if (!SDL_strcasecmp(name, "pixel"))
+		return GFX_SCALE_NEAREST;
+	return -1;
+}
+
+void gfx_set_scaling_type(int type)
+{
+	if (type < 0 || type >= GFX_SCALE_COUNT)
+		type = GFX_SCALE_STANDARD;
+	scaling_type = type;
+}
+
+int gfx_get_scaling_type(void)
+{
+	return scaling_type;
+}
+
+void gfx_get_window_pos_size(int *x, int *y, int *w, int *h)
+{
+	if (!sdl.window)
+		return;
+	if (x || y)
+		SDL_GetWindowPosition(sdl.window, x, y);
+	if (w || h)
+		SDL_GetWindowSize(sdl.window, w, h);
+}
+
+bool gfx_handle_syscommand(possibly_unused unsigned cmd)
+{
+	return false;
+}
 
 static GLuint main_surface_fb;
 static struct texture main_surface;
@@ -139,9 +200,36 @@ void gfx_load_shader(struct shader *dst, const char *vertex_shader_path, const c
 	dst->prepare = NULL;
 }
 
+static void present_prepare_bicubic(struct gfx_render_job *job, void *data)
+{
+	Texture *t = data;
+	glUniform2f(loc_bicubic_tex_size, (float)t->w, (float)t->h);
+}
+
+static void present_prepare_lanczos(struct gfx_render_job *job, void *data)
+{
+	Texture *t = data;
+	glUniform2f(loc_lanczos_tex_size, (float)t->w, (float)t->h);
+}
+
+static void present_prepare_xbrz(struct gfx_render_job *job, void *data)
+{
+	Texture *t = data;
+	glUniform2f(loc_xbrz_tex_size, (float)t->w, (float)t->h);
+}
+
 static int gl_initialize(void)
 {
 	gfx_load_shader(&default_shader, "shaders/render.v.glsl", "shaders/render.f.glsl");
+	gfx_load_shader(&present_bicubic, "shaders/render.v.glsl", "shaders/present_bicubic.f.glsl");
+	gfx_load_shader(&present_lanczos, "shaders/render.v.glsl", "shaders/present_lanczos.f.glsl");
+	gfx_load_shader(&present_xbrz, "shaders/render.v.glsl", "shaders/present_xbrz.f.glsl");
+	loc_bicubic_tex_size = glGetUniformLocation(present_bicubic.program, "tex_size");
+	loc_lanczos_tex_size = glGetUniformLocation(present_lanczos.program, "tex_size");
+	loc_xbrz_tex_size = glGetUniformLocation(present_xbrz.program, "tex_size");
+	present_bicubic.prepare = present_prepare_bicubic;
+	present_lanczos.prepare = present_prepare_lanczos;
+	present_xbrz.prepare = present_prepare_xbrz;
 
 	const struct gfx_vertex vertex_data[] = {
 		//  x,   y,   z,   w,   u,   v
@@ -259,6 +347,7 @@ int gfx_init(void)
 		ERROR("SDL_CreateWindow failed: %s", SDL_GetError());
 
 	set_window_title();
+	win32_ui_init(sdl.window);
 
 	sdl.gl.context = SDL_GL_CreateContext(sdl.window);
 	if (!sdl.gl.context)
@@ -444,8 +533,32 @@ void gfx_swap(void)
 		0, -2, 0,  1,
 		0,  0, 1,  0,
 		0,  0, 0,  1);
+	struct shader *present = &default_shader;
+	GLint mag = GL_LINEAR, minf = GL_LINEAR;
+	switch (scaling_type) {
+	case GFX_SCALE_NEAREST:
+		mag = GL_NEAREST;
+		minf = GL_NEAREST;
+		break;
+	case GFX_SCALE_BICUBIC:
+		present = &present_bicubic;
+		break;
+	case GFX_SCALE_LANCZOS:
+		present = &present_lanczos;
+		break;
+	case GFX_SCALE_XBRZ:
+		present = &present_xbrz;
+		mag = GL_NEAREST;
+		minf = GL_NEAREST;
+		break;
+	default:
+		break;
+	}
+	glBindTexture(GL_TEXTURE_2D, view->handle);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minf);
 	struct gfx_render_job job = {
-		.shader = &default_shader,
+		.shader = present,
 		.shape = GFX_RECTANGLE,
 		.texture = view->handle,
 		.world_transform = mw_transform[0],

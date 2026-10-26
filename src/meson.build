@@ -35,6 +35,7 @@ xsystem4 = [version_h,
             'text.c',
             'util.c',
             'video.c',
+            'win32_ui.c',
             'vm.c',
 
             '3d/collision.c',
@@ -215,7 +216,7 @@ endif
 
 static_link_args = []
 if host_machine.system() == 'windows'
-    static_link_args = ['-static', '-lstdc++']
+    static_link_args = ['-static', '-lstdc++', '-lcomdlg32', '-lcomctl32']
 endif
 
 winsys = 'console'

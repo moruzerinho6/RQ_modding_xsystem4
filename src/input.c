@@ -645,6 +645,7 @@ static void handle_window_event(SDL_Event *e)
 
 void handle_window_events(void)
 {
+	crayfish_log_pump();
 	SDL_Event e;
 	while (SDL_PollEvent(&e)) {
 		switch (e.type) {
@@ -661,6 +662,7 @@ void handle_window_events(void)
 void handle_events(void)
 {
 	rq_prof_begin(RQ_PROF_INPUT);
+	crayfish_log_pump();
 	fire_deferred_events();
 
 	SDL_Event e;

@@ -83,6 +83,9 @@ void get_time(int *hour, int *min, int *sec, int *ms);
 
 void screenshot_save(void);
 
+void crayfish_log_pump(void);
+void rq_notify_scaling_from_menu(int type);
+
 void sys_show_simple_message_box(unsigned flags, const char *title, const char *msg);
 
 #ifndef XSYS4_DATA_DIR
