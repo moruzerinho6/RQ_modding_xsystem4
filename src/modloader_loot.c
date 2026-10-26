@@ -67,6 +67,11 @@ static int g_red_base_pct = 30;
 static int g_attempt_ref = LUA_NOREF;
 static int g_result_ref = LUA_NOREF;
 static int g_rand_seeded;
+static int g_dialog_patched;
+static int g_pct_local = 5;
+static int g_chance_msg = -1;
+static int g_prepared;
+static int g_prep_base, g_prep_pct, g_prep_id, g_prep_x, g_prep_y;
 
 #define CHEST_KV 24
 static struct {
@@ -78,6 +83,7 @@ static struct {
 static int *map_cell(int member, int x, int y);
 static int item_get(int ii, int member);
 static void call_i(int fno, int a);
+static int chest_lua_pct(int x, int y, int id, int base);
 
 static void emit0(struct buffer *out, enum opcode op)
 {
@@ -376,6 +382,106 @@ static int patch_red_roll(struct ain *ain, int red_fno)
 	return 0;
 }
 
+static uint32_t chest_func_end(struct ain *ain, int fno)
+{
+	uint32_t start, end;
+	int i;
+
+	start = ain->functions[fno].address;
+	end = (uint32_t)ain->code_size;
+	for (i = 0; i < ain->nr_functions; i++) {
+		uint32_t a = ain->functions[i].address;
+		if (a > start && a < end)
+			end = a;
+	}
+	return end;
+}
+
+static int chest_second_msg(struct ain *ain, uint32_t from, uint32_t until)
+{
+	uint32_t ip;
+	int n = 0;
+
+	for (ip = from; ip + 6 <= until; ) {
+		uint16_t op = loot_rd16(ain->code + ip);
+		int w = (op < NR_OPCODES) ? instruction_width(op) : 2;
+		if (op == _MSG) {
+			n++;
+			if (n == 2)
+				return loot_rd32(ain->code + ip + 2);
+		}
+		if (w < 2)
+			w = 2;
+		ip += (uint32_t)w;
+	}
+	return -1;
+}
+
+/*
+ * Before the Open/Back away ADV: CALLSYS PREPARE (Lua pct → 成功確率 + MSG).
+ * Vanilla only has 30/60/80/100 lines; force the 30% slot and skip the others
+ * so 90% can display. The later 成功確率==100 "opened" line is left alone.
+ */
+static int patch_red_dialog(struct ain *ain, int red_fno)
+{
+	int spd_fno;
+	uint32_t start, end, ip;
+
+	if (g_dialog_patched)
+		return 1;
+	if (!ain || red_fno < 0)
+		return 0;
+	spd_fno = find_fn(ain, "字速度");
+	if (spd_fno < 0) {
+		rq_log("chest: 字速度 not found; disarm dialog unpatched");
+		return 0;
+	}
+	start = ain->functions[red_fno].address;
+	end = chest_func_end(ain, red_fno);
+	for (ip = start; ip + 20 <= end; ) {
+		uint16_t op = loot_rd16(ain->code + ip);
+		int w = (op < NR_OPCODES) ? instruction_width(op) : 2;
+		if (op == PUSH && loot_rd32(ain->code + ip + 2) == 0
+		    && loot_rd16(ain->code + ip + 6) == CALLFUNC
+		    && loot_rd32(ain->code + ip + 8) == spd_fno
+		    && loot_rd16(ain->code + ip + 12) == SH_IF_LOC_NE_IMM
+		    && loot_rd32(ain->code + ip + 18) == 30) {
+			uint32_t if30 = ip + 12;
+			int loc = loot_rd32(ain->code + if30 + 2);
+			uint32_t skip30 = (uint32_t)loot_rd32(ain->code + if30 + 10);
+			int i, expect[] = { 60, 80, 100 };
+
+			loot_wr16(ain->code + ip, CALLSYS);
+			loot_wr32(ain->code + ip + 2, VM_XSYS_CHEST_PREPARE);
+			loot_wr32(ain->code + if30 + 10, (int32_t)(if30 + instruction_width(SH_IF_LOC_NE_IMM)));
+			g_pct_local = loc;
+			g_chance_msg = chest_second_msg(ain, if30 + instruction_width(SH_IF_LOC_NE_IMM), skip30);
+
+			ip = skip30;
+			for (i = 0; i < 3; i++) {
+				if (ip + 14 > end
+				    || loot_rd16(ain->code + ip) != SH_IF_LOC_NE_IMM
+				    || loot_rd32(ain->code + ip + 2) != loc
+				    || loot_rd32(ain->code + ip + 6) != expect[i]) {
+					rq_log("chest: dialog IF %d%% not at 0x%x", expect[i], ip);
+					break;
+				}
+				loot_wr32(ain->code + ip + 6, -1);
+				ip = (uint32_t)loot_rd32(ain->code + ip + 10);
+			}
+			g_dialog_patched = 1;
+			rq_log("chest: disarm dialog uses attempt %% (MSG %d, 成功確率 local %d)",
+			       g_chance_msg, g_pct_local);
+			return 1;
+		}
+		if (w < 2)
+			w = 2;
+		ip += (uint32_t)w;
+	}
+	rq_log("chest: 字速度 + 30%% dialog IF not found");
+	return 0;
+}
+
 static int kv_get(const char *key, int *ok)
 {
 	int i;
@@ -432,6 +538,67 @@ static void chest_push_info(lua_State *L, int x, int y, int id, int base)
 	lua_setfield(L, -2, "base_pct");
 	lua_pushstring(L, "red");
 	lua_setfield(L, -2, "kind");
+}
+
+static void chest_set_chance_msg(int pct)
+{
+	char utf[80];
+	char *sjis;
+	struct string *s;
+
+	if (!ain || g_chance_msg < 0 || g_chance_msg >= ain->nr_messages)
+		return;
+	if (pct < 0)
+		pct = 0;
+	if (pct > 100)
+		pct = 100;
+	snprintf(utf, sizeof utf, "  (%d%% chance to disarm)", pct);
+	sjis = utf2sjis(utf, 0);
+	if (!sjis)
+		return;
+	s = make_string(sjis, strlen(sjis));
+	free(sjis);
+	if (!s)
+		return;
+	if (ain->messages[g_chance_msg])
+		free_string(ain->messages[g_chance_msg]);
+	ain->messages[g_chance_msg] = s;
+}
+
+static void chest_write_pct_local(int pct)
+{
+	struct page *lp = local_page();
+
+	if (!lp || g_pct_local < 0 || g_pct_local >= lp->nr_vars)
+		return;
+	lp->values[g_pct_local].i = pct;
+}
+
+static void chest_prepare(void)
+{
+	int x, y, id, vanilla, pct;
+
+	x = local_get(0).i;
+	y = local_get(1).i;
+	vanilla = local_get(g_pct_local).i;
+	if (vanilla < 0)
+		vanilla = 0;
+	if (vanilla > 100)
+		vanilla = 100;
+	id = chest_id_at(x, y);
+	pct = chest_lua_pct(x, y, id, vanilla);
+	g_prep_x = x;
+	g_prep_y = y;
+	g_prep_id = id;
+	g_prep_base = vanilla;
+	g_prep_pct = pct;
+	g_prepared = 1;
+	chest_write_pct_local(pct);
+	chest_set_chance_msg(pct);
+	if (g_rq_verbose || g_rq_terminal)
+		rq_log("Chest dialog (%d,%d) id=%d vanilla %d%% -> show %d%%",
+		       x, y, id, vanilla, pct);
+	stack_push(0);
 }
 
 static int chest_lua_pct(int x, int y, int id, int base)
@@ -511,14 +678,23 @@ static int chest_attempt(int vanilla_pct)
 		srand((unsigned)time(NULL));
 		g_rand_seeded = 1;
 	}
-	x = local_get(0).i;
-	y = local_get(1).i;
-	if (vanilla_pct < 0)
-		vanilla_pct = 0;
-	if (vanilla_pct > 100)
-		vanilla_pct = 100;
-	id = chest_id_at(x, y);
-	pct = chest_lua_pct(x, y, id, vanilla_pct);
+	if (g_prepared) {
+		x = g_prep_x;
+		y = g_prep_y;
+		id = g_prep_id;
+		vanilla_pct = g_prep_base;
+		pct = g_prep_pct;
+		g_prepared = 0;
+	} else {
+		x = local_get(0).i;
+		y = local_get(1).i;
+		if (vanilla_pct < 0)
+			vanilla_pct = 0;
+		if (vanilla_pct > 100)
+			vanilla_pct = 100;
+		id = chest_id_at(x, y);
+		pct = chest_lua_pct(x, y, id, vanilla_pct);
+	}
 	rolled = (rand() % 100) + 1;
 	success = rolled <= pct;
 	if (!success)
@@ -1038,21 +1214,26 @@ int rq_chest_install(struct ain *ain)
 		g_red_base_pct = scanned;
 	if (!patch_red_roll(ain, f_red))
 		return 0;
+	if (!patch_red_dialog(ain, f_red))
+		rq_log("chest: disarm dialog still vanilla 30/60/80/100 lines");
 	(void)f_chest;
-	rq_log("chest: vanilla %d%% / explode; Lua may raise %% (Chest Opening stays in AIN)",
+	rq_log("chest: vanilla %d%% / explode; Lua may raise %% (dialog follows attempt %%)",
 	       g_red_base_pct);
 	return 1;
 }
 
 int rq_chest_syscall(int code)
 {
-	int vanilla_pct;
-
-	if ((enum vm_extra_syscall)code != VM_XSYS_CHEST_ATTEMPT)
+	switch ((enum vm_extra_syscall)code) {
+	case VM_XSYS_CHEST_PREPARE:
+		chest_prepare();
+		return 1;
+	case VM_XSYS_CHEST_ATTEMPT:
+		stack_push(chest_attempt(stack_pop().i));
+		return 1;
+	default:
 		return 0;
-	vanilla_pct = stack_pop().i;
-	stack_push(chest_attempt(vanilla_pct));
-	return 1;
+	}
 }
 
 int rq_lua_chest_on_attempt(lua_State *L)
