@@ -10,8 +10,10 @@ extern char g_rq_mods_dir[RQ_PATH_MAX];
 extern char g_rq_exe_dir[RQ_PATH_MAX];
 extern FILE *g_rq_log;
 extern int g_rq_verbose;
+extern int g_rq_terminal;
 extern int g_rq_skip_sdl;
 
 void rq_log(const char *fmt, ...);
+void rq_log_tag(const char *tag, const char *fmt, ...);
 
 #endif

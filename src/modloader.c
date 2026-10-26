@@ -45,7 +45,9 @@ char g_rq_mods_dir[RQ_PATH_MAX];
 char g_rq_exe_dir[RQ_PATH_MAX];
 FILE *g_rq_log;
 int g_rq_verbose;
+int g_rq_terminal;
 int g_rq_skip_sdl;
+static int g_rq_console;
 
 static struct ain *g_ain;
 static lua_State *g_L;
@@ -55,18 +57,99 @@ lua_State *rq_lua(void)
 	return g_L;
 }
 
-void rq_log(const char *fmt, ...)
+static void rq_vlog(const char *tag, const char *fmt, va_list ap)
 {
 	char buf[1024];
-	va_list ap;
-	va_start(ap, fmt);
+	const char *t = (tag && *tag) ? tag : "rqmod";
 	vsnprintf(buf, sizeof buf, fmt, ap);
-	va_end(ap);
-	fprintf(stderr, "[rqmod] %s\n", buf);
+	fprintf(stderr, "[%s] %s\n", t, buf);
+	fflush(stderr);
 	if (g_rq_log) {
-		fprintf(g_rq_log, "%s\n", buf);
+		fprintf(g_rq_log, "[%s] %s\n", t, buf);
 		fflush(g_rq_log);
 	}
+}
+
+void rq_log(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	rq_vlog("rqmod", fmt, ap);
+	va_end(ap);
+}
+
+void rq_log_tag(const char *tag, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	rq_vlog(tag, fmt, ap);
+	va_end(ap);
+}
+
+#ifdef _WIN32
+static void rq_open_terminal(void)
+{
+	FILE *con;
+	if (!g_rq_terminal || g_rq_console)
+		return;
+	if (!GetConsoleWindow()) {
+		if (!AllocConsole())
+			return;
+		SetConsoleTitleA("Rance Quest mod log");
+	}
+	SetConsoleOutputCP(CP_UTF8);
+	SetConsoleCP(CP_UTF8);
+	con = freopen("CONOUT$", "w", stdout);
+	(void)con;
+	con = freopen("CONOUT$", "w", stderr);
+	(void)con;
+	con = freopen("CONIN$", "r", stdin);
+	(void)con;
+	SetConsoleOutputCP(CP_UTF8);
+	g_rq_console = 1;
+}
+#else
+static void rq_open_terminal(void) {}
+#endif
+
+static const char *lua_mod_tag(lua_State *L)
+{
+	lua_Debug ar;
+	const char *src, *mods, *slash, *dot;
+	size_t n;
+	static char tag[64];
+
+	if (!lua_getstack(L, 1, &ar) || !lua_getinfo(L, "S", &ar) || !ar.source)
+		return "lua";
+	src = ar.source;
+	if (src[0] == '@')
+		src++;
+	mods = strstr(src, "\\mods\\");
+	if (!mods)
+		mods = strstr(src, "/mods/");
+	if (!mods)
+		return "lua";
+	mods += 6;
+	slash = strpbrk(mods, "\\/");
+	if (slash) {
+		n = (size_t)(slash - mods);
+		if (n == 0)
+			return "lua";
+		if (n >= sizeof tag)
+			n = sizeof tag - 1;
+		memcpy(tag, mods, n);
+		tag[n] = 0;
+		return tag;
+	}
+	dot = strrchr(mods, '.');
+	n = dot ? (size_t)(dot - mods) : strlen(mods);
+	if (n == 0)
+		return "lua";
+	if (n >= sizeof tag)
+		n = sizeof tag - 1;
+	memcpy(tag, mods, n);
+	tag[n] = 0;
+	return tag;
 }
 
 static uint16_t rd16(const uint8_t *p)
@@ -514,7 +597,7 @@ static int l_log(lua_State *L)
 		luaL_addvalue(&b);
 	}
 	luaL_pushresult(&b);
-	rq_log("%s", lua_tostring(L, -1));
+	rq_log_tag(lua_mod_tag(L), "%s", lua_tostring(L, -1));
 	return 0;
 }
 
@@ -674,7 +757,7 @@ static int load_one_lua(lua_State *L, const char *path)
 		lua_pop(L, 1);
 		return 0;
 	}
-	rq_log("loaded %s", path);
+	rq_log("Loaded mod file %s", path);
 	return 1;
 }
 
@@ -786,6 +869,7 @@ static int json_bool_obj(cJSON *o, const char *key, int deflt)
 
 static const char DEFAULT_JSON[] =
 	"{\n"
+	"  \"terminal\": true,\n"
 	"  \"verbose\": false,\n"
 	"  \"profile\": {\n"
 	"    \"csv\": false,\n"
@@ -826,6 +910,7 @@ static void load_config(void)
 	cJSON *root;
 
 	g_rq_verbose = 0;
+	g_rq_terminal = 1;
 	snprintf(path, sizeof path, "%s\\config.json", g_rq_exe_dir);
 	fp = fopen(path, "rb");
 	if (!fp) {
@@ -833,7 +918,6 @@ static void load_config(void)
 		if (fp) {
 			fwrite(DEFAULT_JSON, 1, sizeof DEFAULT_JSON - 1, fp);
 			fclose(fp);
-			rq_log("wrote default config (all extra layers off) %s", path);
 		}
 		{
 			struct rq_prof_runtime z = {0};
@@ -854,24 +938,31 @@ static void load_config(void)
 	buf[n] = 0;
 	root = cJSON_Parse(buf);
 	free(buf);
-	if (!root) {
-		rq_log("config.json parse failed: %s", path);
+	if (!root)
 		return;
-	}
 	g_rq_verbose = json_bool_obj(root, "verbose", 0);
+	g_rq_terminal = json_bool_obj(root, "terminal", 1);
 	apply_profile_json(root);
 	cJSON_Delete(root);
-	rq_log("config=%s verbose=%d", path, g_rq_verbose);
 }
 
 void rq_mods_early_init(void)
 {
 	static int once;
+	char logpath[RQ_PATH_MAX];
 	if (once)
 		return;
 	once = 1;
 	resolve_dirs();
 	load_config();
+	rq_open_terminal();
+	if (!g_rq_log && dir_exists(g_rq_mods_dir)) {
+		snprintf(logpath, sizeof logpath, "%s\\rqmod.log", g_rq_mods_dir);
+		g_rq_log = fopen(logpath, "w");
+	}
+	rq_log("Config: terminal %s, verbose %s, profiling off unless a profile flag is on",
+	       g_rq_terminal ? "on (this console)" : "off",
+	       g_rq_verbose ? "on" : "off");
 }
 
 bool rq_mods_swallow_msgbox(const char *title, const char *msg)
@@ -1028,19 +1119,20 @@ void rq_mods_init(struct ain *ain)
 	rq_mods_early_init();
 	g_ain = ain;
 
-	if (dir_exists(g_rq_mods_dir)) {
+	if (!g_rq_log && dir_exists(g_rq_mods_dir)) {
 		snprintf(logpath, sizeof logpath, "%s\\rqmod.log", g_rq_mods_dir);
 		g_rq_log = fopen(logpath, "w");
-	} else {
-		rq_log("no mods dir at %s — running vanilla AIN", g_rq_mods_dir);
+	} else if (!dir_exists(g_rq_mods_dir)) {
+		rq_log("No mods folder at %s — running vanilla AIN", g_rq_mods_dir);
 	}
 
-	rq_log("game_dir=%s", g_rq_game_dir);
-	rq_log("mods_dir=%s", g_rq_mods_dir);
-	rq_log("AIN code_size=%zu nr_functions=%d version=%d (in-engine Lua, no RVA)",
-	       ain ? ain->code_size : 0, ain ? ain->nr_functions : 0, ain ? ain->version : 0);
-	rq_log("config verbose=%d (vm_call event log)", g_rq_verbose);
-	rq_log("profile csv=%d leftover_ain=%d hll=%d text_cache=%d update_split=%d vm_ops=%d ain_fn=%d",
+	rq_log("Game folder: %s", g_rq_game_dir);
+	rq_log("Mods folder: %s", g_rq_mods_dir);
+	rq_log("AIN loaded (%d functions, version %d)",
+	       ain ? ain->nr_functions : 0, ain ? ain->version : 0);
+	if (g_rq_verbose)
+		rq_log("Verbose event log is on (settings / save / dungeon / shop / combat)");
+	rq_log("Profile: csv=%d leftover=%d hll=%d text_cache=%d update_split=%d vm_ops=%d ain_fn=%d",
 	       g_rq_prof.csv, g_rq_prof.leftover_ain, g_rq_prof.hll, g_rq_prof.text_cache,
 	       g_rq_prof.update_split, g_rq_prof.vm_ops, g_rq_prof.ain_fn);
 
@@ -1054,7 +1146,7 @@ void rq_mods_init(struct ain *ain)
 	luaL_openlibs(g_L);
 	open_rq(g_L);
 	n = load_mods(g_L);
-	rq_log("loaded %d Lua mod(s) — ready", n);
+	rq_log("Loaded %d Lua mod(s). Ready.", n);
 }
 
 #endif /* RQ_MODLOADER */

@@ -60,13 +60,14 @@ struct hud_cg {
 #define MODAL_RESULT_ITEM 4
 #define MODAL_ADV 8
 #define MODAL_SELECT 16
+#define MODAL_N 5
 
 static int g_dungeon;
 static int g_shown;
 static int g_suspended;
 static int g_battle;
 static int g_profile;
-static int g_modal;
+static int g_modal_n[MODAL_N];
 static int g_block_mouse;
 static int g_on_frame_ref = LUA_NOREF;
 static int g_mx, g_my, g_left, g_right, g_left_edge, g_prev_left;
@@ -127,8 +128,8 @@ static int wrap_method_flag(struct ain *ain, int fno, int sys, int before)
 	emit0(&out, RETURN);
 	emit1(&out, ENDFUNC, fno);
 	commit_wrap(ain, fno, &out);
-	rq_log("hud: wrap method fno=%d nargs=%d sys=0x%x before=%d",
-	       fno, nargs, sys, before);
+	if (g_rq_verbose)
+		rq_log("HUD: wrapped method fno=%d (%d args)", fno, nargs);
 	return 1;
 }
 
@@ -151,8 +152,8 @@ static int wrap_func_flag(struct ain *ain, int fno, int sys, int before)
 	emit0(&out, RETURN);
 	emit1(&out, ENDFUNC, fno);
 	commit_wrap(ain, fno, &out);
-	rq_log("hud: wrap func fno=%d nargs=%d sys=0x%x before=%d",
-	       fno, nargs, sys, before);
+	if (g_rq_verbose)
+		rq_log("HUD: wrapped function fno=%d (%d args)", fno, nargs);
 	return 1;
 }
 
@@ -173,8 +174,8 @@ static int wrap_func_around(struct ain *ain, int fno, int sys_on, int sys_off)
 	emit0(&out, RETURN);
 	emit1(&out, ENDFUNC, fno);
 	commit_wrap(ain, fno, &out);
-	rq_log("hud: wrap func around fno=%d nargs=%d on=0x%x off=0x%x",
-	       fno, nargs, sys_on, sys_off);
+	if (g_rq_verbose)
+		rq_log("HUD: wrapped function around fno=%d", fno);
 	return 1;
 }
 
@@ -193,7 +194,7 @@ static int wrap_set_show(struct ain *ain, int fno)
 	emit0(&out, RETURN);
 	emit1(&out, ENDFUNC, fno);
 	commit_wrap(ain, fno, &out);
-	rq_log("hud: wrap T_MapParts@setShow fno=%d", fno);
+	rq_log("HUD: watching T_MapParts@setShow so Item Previews hide when the map HUD is hidden");
 	return 1;
 }
 
@@ -216,12 +217,14 @@ static int wrap_method_modal(struct ain *ain, int fno, int mask, int on)
 	emit0(&out, RETURN);
 	emit1(&out, ENDFUNC, fno);
 	commit_wrap(ain, fno, &out);
-	rq_log("hud: wrap modal fno=%d mask=%d on=%d nargs=%d", fno, mask, on, nargs);
+	if (g_rq_verbose)
+		rq_log("HUD: wrapped create/delete fno=%d mask=%d on=%d", fno, mask, on);
 	return 1;
 }
 
-/* Blocking @select (and similar): Config/result keep the object alive, and
- * T_MapParts@create clears g_modal, so create/delete alone can miss overlays. */
+/* Blocking @select/@wait: ON for the call, OFF when it returns. Do not wrap
+ * create/delete of T_Select / T_MapMessage — those objects stay alive on the
+ * map, so a leftover bit kept exploring() false on real map-walk. */
 static int wrap_modal_around(struct ain *ain, int fno, int mask, int method)
 {
 	int dup = ain_dup_function(ain, fno);
@@ -246,25 +249,27 @@ static int wrap_modal_around(struct ain *ain, int fno, int mask, int method)
 	emit0(&out, RETURN);
 	emit1(&out, ENDFUNC, fno);
 	commit_wrap(ain, fno, &out);
-	rq_log("hud: wrap modal around fno=%d mask=%d method=%d nargs=%d",
-	       fno, mask, method, nargs);
 	return 1;
 }
 
-static void wrap_func_modal(struct ain *ain, const char *name, int mask)
+static void wrap_blocking(struct ain *ain, const char *name, int mask, int important)
 {
 	int fno = find_fn(ain, name);
+	int method;
 	if (fno < 0) {
-		rq_log("hud: modal skip %s (missing)", name);
+		if (important || g_rq_verbose)
+			rq_log("HUD: %s is not in this AIN, so it was not wrapped", name);
 		return;
 	}
-	wrap_modal_around(ain, fno, mask, 0);
+	method = strchr(name, '@') != NULL;
+	wrap_modal_around(ain, fno, mask, method);
+	rq_log("HUD: wrapped %s — Item Previews hide while that screen runs", name);
 }
 
-static void wrap_ui(struct ain *ain, const char *cls, int mask)
+static void wrap_lifetime(struct ain *ain, const char *cls, int mask)
 {
 	char buf[160];
-	int c, d, s;
+	int c, d;
 
 	snprintf(buf, sizeof buf, "%s@create", cls);
 	c = find_fn(ain, buf);
@@ -274,28 +279,10 @@ static void wrap_ui(struct ain *ain, const char *cls, int mask)
 	d = find_fn(ain, buf);
 	if (d >= 0)
 		wrap_method_modal(ain, d, mask, 0);
-	snprintf(buf, sizeof buf, "%s@select", cls);
-	s = find_fn(ain, buf);
-	if (s >= 0)
-		wrap_modal_around(ain, s, mask, 1);
-	rq_log("hud: modal %s mask=%d create=%d delete=%d select=%d",
-	       cls, mask, c, d, s);
-}
-
-static void log_struct_hits(struct ain *ain, const char *ascii)
-{
-	int i, n = 0;
-	if (!ain || !ascii)
-		return;
-	for (i = 0; i < ain->nr_structures && n < 8; i++) {
-		char *utf;
-		if (!ain->structures[i].name || !strstr(ain->structures[i].name, ascii))
-			continue;
-		utf = sjis2utf(ain->structures[i].name, 0);
-		rq_log("hud: struct %s", utf ? utf : ascii);
-		free(utf);
-		n++;
-	}
+	if (c >= 0 || d >= 0)
+		rq_log("HUD: watching %s create/delete so Item Previews hide on the result screen", cls);
+	else if (g_rq_verbose)
+		rq_log("HUD: %s is not in this AIN (result overlay skipped)", cls);
 }
 
 static void hud_make_ts(struct text_style *ts, float size, int r, int g, int b)
@@ -372,6 +359,48 @@ static int hit(int x, int y, int w, int h)
 	return g_mx >= x && g_my >= y && g_mx < x + w && g_my < y + h;
 }
 
+static int modal_index(int mask)
+{
+	switch (mask) {
+	case MODAL_CONFIG: return 0;
+	case MODAL_RESULT: return 1;
+	case MODAL_RESULT_ITEM: return 2;
+	case MODAL_ADV: return 3;
+	case MODAL_SELECT: return 4;
+	default: return -1;
+	}
+}
+
+static int modal_any(void)
+{
+	int i;
+	for (i = 0; i < MODAL_N; i++) {
+		if (g_modal_n[i] > 0)
+			return 1;
+	}
+	return 0;
+}
+
+static void modal_clear(void)
+{
+	memset(g_modal_n, 0, sizeof g_modal_n);
+}
+
+static const char *modal_reason(void)
+{
+	if (g_modal_n[0] > 0)
+		return "Game Config is open";
+	if (g_modal_n[1] > 0)
+		return "the dungeon result screen is open";
+	if (g_modal_n[2] > 0)
+		return "the appraisal / identify screen is open";
+	if (g_modal_n[3] > 0)
+		return "a dungeon dialog / ADV is running";
+	if (g_modal_n[4] > 0)
+		return "a choice dialog is open";
+	return "an overlay is open";
+}
+
 int rq_dungeon_active(void)
 {
 	return g_dungeon;
@@ -379,7 +408,51 @@ int rq_dungeon_active(void)
 
 int rq_dungeon_exploring(void)
 {
-	return g_dungeon && g_shown && !g_suspended && !g_battle && !g_profile && !g_modal;
+	return g_dungeon && g_shown && !g_suspended && !g_battle && !g_profile && !modal_any();
+}
+
+static void log_exploring_change(void)
+{
+	static int prev = -1;
+	static int prev_d, prev_sh, prev_su, prev_b, prev_p, prev_m[MODAL_N];
+	int now, i, changed;
+
+	if (!g_rq_verbose && !g_rq_terminal)
+		return;
+	now = rq_dungeon_exploring() ? 1 : 0;
+	changed = now != prev || prev_d != g_dungeon || prev_sh != g_shown
+		|| prev_su != g_suspended || prev_b != g_battle || prev_p != g_profile;
+	for (i = 0; i < MODAL_N; i++) {
+		if (prev_m[i] != g_modal_n[i])
+			changed = 1;
+	}
+	if (!changed)
+		return;
+	prev = now;
+	prev_d = g_dungeon;
+	prev_sh = g_shown;
+	prev_su = g_suspended;
+	prev_b = g_battle;
+	prev_p = g_profile;
+	memcpy(prev_m, g_modal_n, sizeof prev_m);
+	if (now) {
+		rq_log("Item Previews: map-walk (button can show)");
+		return;
+	}
+	if (!g_dungeon)
+		rq_log("Item Previews hidden: not in a dungeon");
+	else if (!g_shown)
+		rq_log("Item Previews hidden: the map HUD is hidden");
+	else if (g_suspended)
+		rq_log("Item Previews hidden: the map is suspended (join dialog / event)");
+	else if (g_battle)
+		rq_log("Item Previews hidden: battle");
+	else if (g_profile)
+		rq_log("Item Previews hidden: character profile");
+	else if (modal_any())
+		rq_log("Item Previews hidden: %s", modal_reason());
+	else
+		rq_log("Item Previews hidden: exploring is false");
 }
 
 int rq_hud_block_mouse(void)
@@ -389,6 +462,7 @@ int rq_hud_block_mouse(void)
 
 int rq_hud_syscall(int code)
 {
+	int i;
 	switch ((enum vm_extra_syscall)code) {
 	case VM_XSYS_HUD_ON:
 		g_dungeon = 1;
@@ -396,7 +470,8 @@ int rq_hud_syscall(int code)
 		g_suspended = 0;
 		g_battle = 0;
 		g_profile = 0;
-		g_modal = 0;
+		modal_clear();
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_OFF:
 		g_dungeon = 0;
@@ -404,35 +479,49 @@ int rq_hud_syscall(int code)
 		g_suspended = 0;
 		g_battle = 0;
 		g_profile = 0;
-		g_modal = 0;
+		modal_clear();
 		g_block_mouse = 0;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_SUSPEND:
 		g_suspended = 1;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_RESUME:
 		g_suspended = 0;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_BATTLE_ON:
 		g_battle = 1;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_BATTLE_OFF:
 		g_battle = 0;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_SHOW:
 		g_shown = stack_pop().i ? 1 : 0;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_PROFILE_ON:
 		g_profile = 1;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_PROFILE_OFF:
 		g_profile = 0;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_MODAL_ON:
-		g_modal |= stack_pop().i;
+		i = modal_index(stack_pop().i);
+		if (i >= 0)
+			g_modal_n[i]++;
+		log_exploring_change();
 		return 1;
 	case VM_XSYS_HUD_MODAL_OFF:
-		g_modal &= ~stack_pop().i;
+		i = modal_index(stack_pop().i);
+		if (i >= 0 && g_modal_n[i] > 0)
+			g_modal_n[i]--;
+		log_exploring_change();
 		return 1;
 	default:
 		return 0;
@@ -447,43 +536,51 @@ int rq_hud_install(struct ain *ain)
 	f_create = find_fn(ain, "T_MapParts@create");
 	f_delete = find_fn(ain, "T_MapParts@delete");
 	if (f_create < 0 || f_delete < 0) {
-		rq_log("hud: T_MapParts create/delete missing (%d/%d)", f_create, f_delete);
+		rq_log("HUD: T_MapParts create/delete missing — exploring cannot turn on");
 		return 0;
 	}
 	wrap_method_flag(ain, f_create, VM_XSYS_HUD_ON, 0);
 	wrap_method_flag(ain, f_delete, VM_XSYS_HUD_OFF, 0);
+	rq_log("HUD: dungeon map create/delete turns exploring on and off");
 	f_show = find_fn(ain, "T_MapParts@setShow");
 	if (f_show >= 0)
 		wrap_set_show(ain, f_show);
 	f_susp = find_fn(ain, "マップ_サスペンド");
 	f_res = find_fn(ain, "マップ_レジューム");
-	if (f_susp >= 0)
+	if (f_susp >= 0) {
 		wrap_func_flag(ain, f_susp, VM_XSYS_HUD_SUSPEND, 0);
+		rq_log("HUD: map suspend (join dialog / events) hides Item Previews");
+	}
 	if (f_res >= 0)
 		wrap_func_flag(ain, f_res, VM_XSYS_HUD_RESUME, 0);
 	f_battle = find_fn(ain, "Ｒ８戦闘");
-	if (f_battle >= 0)
+	if (f_battle >= 0) {
 		wrap_func_around(ain, f_battle, VM_XSYS_HUD_BATTLE_ON,
 				 VM_XSYS_HUD_BATTLE_OFF);
+		rq_log("HUD: battle hides Item Previews until it returns");
+	}
 	f_st_c = find_fn(ain, "T_Status@create");
 	f_st_d = find_fn(ain, "T_Status@delete");
 	if (f_st_c >= 0)
 		wrap_method_flag(ain, f_st_c, VM_XSYS_HUD_PROFILE_ON, 0);
 	if (f_st_d >= 0)
 		wrap_method_flag(ain, f_st_d, VM_XSYS_HUD_PROFILE_OFF, 0);
-	log_struct_hits(ain, "SystemMenu");
-	log_struct_hits(ain, "Result");
-	log_struct_hits(ain, "MapMessage");
-	log_struct_hits(ain, "T_ADV");
-	wrap_ui(ain, "T_SystemMenu", MODAL_CONFIG);
-	wrap_ui(ain, "T_Result", MODAL_RESULT);
-	wrap_ui(ain, "T_ResultItem", MODAL_RESULT_ITEM);
-	wrap_ui(ain, "T_MapMessage", MODAL_ADV);
-	wrap_ui(ain, "T_Select", MODAL_SELECT);
-	wrap_ui(ain, "T_ADV", MODAL_ADV);
-	wrap_func_modal(ain, "リザルト鑑定", MODAL_RESULT_ITEM);
-	rq_log("hud: exploring wraps show=%d susp=%d res=%d battle=%d status=%d/%d modal=config/result/adv/select",
-	       f_show, f_susp, f_res, f_battle, f_st_c, f_st_d);
+	if (f_st_c >= 0)
+		rq_log("HUD: character profile (T_Status) hides Item Previews");
+	/* Blocking loops only. create/delete of T_Select / T_MapMessage / T_SystemMenu
+	 * stays off — those objects live on the map and never deleted, which stuck
+	 * exploring() false on real map-walk. */
+	wrap_blocking(ain, "T_SystemMenu@select", MODAL_CONFIG, 1);
+	wrap_blocking(ain, "T_Result@select", MODAL_RESULT, 0);
+	wrap_blocking(ain, "T_ResultItem@select", MODAL_RESULT_ITEM, 0);
+	wrap_blocking(ain, "リザルト鑑定", MODAL_RESULT_ITEM, 0);
+	wrap_lifetime(ain, "T_Result", MODAL_RESULT);
+	wrap_lifetime(ain, "T_ResultItem", MODAL_RESULT_ITEM);
+	wrap_blocking(ain, "T_MapMessage@select", MODAL_ADV, 0);
+	wrap_blocking(ain, "T_MapMessage@wait", MODAL_ADV, 0);
+	wrap_blocking(ain, "T_ADV@select", MODAL_ADV, 0);
+	wrap_blocking(ain, "T_ADV@wait", MODAL_ADV, 0);
+	wrap_blocking(ain, "T_Select@select", MODAL_SELECT, 0);
 	return 1;
 }
 
@@ -739,9 +836,10 @@ int rq_hud_tick(void)
 		return 0;
 	lua_rawgeti(L, LUA_REGISTRYINDEX, g_on_frame_ref);
 	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-		rq_log("hud on_frame: %s", lua_tostring(L, -1));
+		rq_log("HUD on_frame error: %s", lua_tostring(L, -1));
 		lua_pop(L, 1);
 	}
+	log_exploring_change();
 	return g_drew;
 }
 
