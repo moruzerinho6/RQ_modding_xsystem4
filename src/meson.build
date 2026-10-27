@@ -253,7 +253,8 @@ if get_option('modloader')
         command: [py, meson.current_source_dir() / 'gen_build_stamp.py', '@OUTPUT@'],
         build_always_stale: true)
     xsystem4 += ['modloader.c', 'modloader_agent.c', 'modloader_loot.c',
-                 'modloader_hud.c', rq_stamp]
+                 'modloader_hud.c', 'modloader_orb.c', 'modloader_skill.c',
+                 rq_stamp]
     exe_inc += lua_inc
     exe_link += lua_lib
 endif

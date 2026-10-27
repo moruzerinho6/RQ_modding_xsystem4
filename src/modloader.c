@@ -738,6 +738,30 @@ static int l_chest_install(lua_State *L)
 	return 1;
 }
 
+static int l_orb_install(lua_State *L)
+{
+	int ok;
+	if (!g_ain)
+		return luaL_error(L, "AIN not loaded");
+	ok = rq_orb_install(g_ain);
+	if (!ok)
+		return luaL_error(L, "orb.install failed (see mods/rqmod.log)");
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+static int l_skill_install(lua_State *L)
+{
+	int ok;
+	if (!g_ain)
+		return luaL_error(L, "AIN not loaded");
+	ok = rq_skill_install(g_ain);
+	if (!ok)
+		return luaL_error(L, "skill.install failed (see mods/rqmod.log)");
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static void set_cfn(lua_State *L, const char *name, lua_CFunction fn)
 {
 	lua_pushcfunction(L, fn);
@@ -812,6 +836,16 @@ static void open_rq(lua_State *L)
 	set_cfn(L, "get", rq_lua_chest_get);
 	set_cfn(L, "set", rq_lua_chest_set);
 	lua_setfield(L, -2, "chest");
+
+	lua_newtable(L);
+	set_cfn(L, "install", l_orb_install);
+	lua_setfield(L, -2, "orb");
+
+	lua_newtable(L);
+	set_cfn(L, "install", l_skill_install);
+	set_cfn(L, "on_describe", rq_lua_skill_on_describe);
+	set_cfn(L, "get", rq_lua_skill_get);
+	lua_setfield(L, -2, "skill");
 
 	/* Aliases so camera-zoom / skip-network-popup stay unchanged. */
 	set_cfn(L, "dungeon_camera", l_dungeon_camera);
