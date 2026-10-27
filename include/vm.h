@@ -49,6 +49,7 @@ enum vm_extra_syscall {
 	VM_XSYS_CHEST_PREPARE = 0x80000012,
 	VM_XSYS_ORB_HEAL = 0x80000013,
 	VM_XSYS_SKILL_DESCRIBE = 0x80000014,
+	VM_XSYS_COUNTER_GUARD = 0x80000015,
 };
 
 // Non-heap values. Stored in pages and on the stack.

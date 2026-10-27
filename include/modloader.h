@@ -43,6 +43,9 @@ int rq_skill_install(struct ain *ain);
 int rq_skill_syscall(int code);
 int rq_lua_skill_on_describe(struct lua_State *L);
 int rq_lua_skill_get(struct lua_State *L);
+int rq_counter_install(struct ain *ain);
+int rq_counter_syscall(int code);
+int rq_lua_counter_on_guard_counter(struct lua_State *L);
 int rq_loot_install(struct ain *ain);
 int rq_loot_syscall(int code);
 int rq_loot_list(struct lua_State *L);
@@ -109,6 +112,8 @@ static inline int rq_orb_install(struct ain *ain) { (void)ain; return 0; }
 static inline int rq_orb_syscall(int code) { (void)code; return 0; }
 static inline int rq_skill_install(struct ain *ain) { (void)ain; return 0; }
 static inline int rq_skill_syscall(int code) { (void)code; return 0; }
+static inline int rq_counter_install(struct ain *ain) { (void)ain; return 0; }
+static inline int rq_counter_syscall(int code) { (void)code; return 0; }
 static inline int rq_hud_syscall(int code) { (void)code; return 0; }
 static inline int rq_hud_tick(void) { return 0; }
 static inline void rq_hud_draw(void) {}
