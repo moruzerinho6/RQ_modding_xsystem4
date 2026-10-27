@@ -32,6 +32,8 @@ static int g_fno_kinou = -1;
 static int g_fno_bairitsu = -1;
 static int g_fno_target = -1;
 static int g_fno_desc1 = -1;
+static int g_fno_koudou = -1;
+static int g_fno_kouka = -1;
 
 static void emit0(struct buffer *out, enum opcode op)
 {
@@ -197,6 +199,8 @@ int rq_skill_install(struct ain *ain)
 	g_fno_bairitsu = find_fn(ain, "Ｓ倍率");
 	g_fno_target = find_fn(ain, "Ｓ対象");
 	g_fno_desc1 = find_fn(ain, "Ｓ説明文１");
+	g_fno_koudou = find_fn(ain, "Ｓ行動種類");
+	g_fno_kouka = find_fn(ain, "Ｓ効果");
 
 	if (f_desc < 0) {
 		rq_log("skill: スキル_説明文１ not found");
@@ -206,8 +210,9 @@ int rq_skill_install(struct ain *ain)
 		return 0;
 
 	g_on = 1;
-	rq_log("skill: describe wrap on; getters name=%d kinou=%d bairitsu=%d target=%d desc1=%d",
-	       g_fno_name, g_fno_kinou, g_fno_bairitsu, g_fno_target, g_fno_desc1);
+	rq_log("skill: describe wrap on; getters name=%d kinou=%d bairitsu=%d target=%d desc1=%d koudou=%d kouka=%d",
+	       g_fno_name, g_fno_kinou, g_fno_bairitsu, g_fno_target, g_fno_desc1,
+	       g_fno_koudou, g_fno_kouka);
 	return 1;
 }
 
@@ -243,6 +248,13 @@ int rq_lua_skill_get(lua_State *L)
 
 	lua_pushinteger(L, call_ii(g_fno_target, id, -1));
 	lua_setfield(L, -2, "target");
+
+	/* 行動種類: 1 physical, 2 magic, 3 special, 4 support, 0 ability */
+	lua_pushinteger(L, call_ii(g_fno_koudou, id, -1));
+	lua_setfield(L, -2, "koudou");
+
+	lua_pushinteger(L, call_ii(g_fno_kouka, id, -1));
+	lua_setfield(L, -2, "kouka");
 
 	desc1 = call_get_utf(g_fno_desc1, id);
 	lua_pushstring(L, desc1);
