@@ -839,6 +839,15 @@ static void open_rq(lua_State *L)
 
 	lua_newtable(L);
 	set_cfn(L, "install", l_orb_install);
+	set_cfn(L, "on_heal", rq_lua_orb_on_heal);
+	set_cfn(L, "roster", rq_lua_orb_roster);
+	set_cfn(L, "get_state", rq_lua_orb_get_state);
+	set_cfn(L, "set_state", rq_lua_orb_set_state);
+	set_cfn(L, "set_status", rq_lua_orb_set_status);
+	set_cfn(L, "get_hp", rq_lua_orb_get_hp);
+	set_cfn(L, "get_max_hp", rq_lua_orb_get_max_hp);
+	set_cfn(L, "set_hp", rq_lua_orb_set_hp);
+	set_cfn(L, "full_heal", rq_lua_orb_full_heal);
 	lua_setfield(L, -2, "orb");
 
 	lua_newtable(L);

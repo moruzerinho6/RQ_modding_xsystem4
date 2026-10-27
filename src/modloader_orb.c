@@ -1,7 +1,8 @@
 /* Copyright (C) 2026 Rance Quest modding fork
  *
- * Recovery Spring (回復の泉): replace PTA-only heal with full roster heal.
- * Lua: rq.orb.install(). Carolie / flash / ＭＤ消し stay vanilla.
+ * Recovery Spring (回復の泉): CALLSYS replaces ＰＴＡ体力回復; Lua owns heal
+ * policy via rq.orb.on_heal + roster/HP primitives. Carolie / flash / ＭＤ消し
+ * stay in vanilla 回復の泉処理 after the hook returns.
  */
 
 #ifdef RQ_MODLOADER
@@ -29,11 +30,13 @@
 #define ORB_IIC_HI 200
 
 static int g_on;
+static int g_heal_ref = LUA_NOREF;
 static int g_fno_state = -1;
 static int g_fno_status = -1;
 static int g_fno_hp = -1;
 static int g_fno_hpmax = -1;
 static int g_fno_supply = -1;
+static int g_fno_pta_heal = -1;
 
 static uint16_t orb_rd16(const uint8_t *p)
 {
@@ -83,7 +86,6 @@ static int call_ii(int fno, int a, int b)
 	return r;
 }
 
-/* Ｃ補給／体力(iic, "") — void. */
 static void call_supply_full(int iic)
 {
 	int slot;
@@ -95,36 +97,33 @@ static void call_supply_full(int iic)
 	vm_call(g_fno_supply, -1);
 }
 
-static void orb_heal(void)
+/* Vanilla PTA-only heal if Lua did not register on_heal. */
+static void orb_vanilla_pta_heal(void)
 {
-	int iic, state, maxhp, hp;
-	int n_full = 0, n_revive = 0;
-
-	for (iic = ORB_IIC_LO; iic <= ORB_IIC_HI; iic++) {
-		state = call_ii(g_fno_state, iic, -1);
-		if (state == 1 || state == 2) {
-			call_supply_full(iic);
-			n_full++;
-		} else if (state == 3) {
-			call_ii(g_fno_state, iic, 2);
-			call_ii(g_fno_status, iic, 0);
-			maxhp = call_ii(g_fno_hpmax, iic, -1);
-			hp = maxhp * 3 / 10;
-			if (hp < 1)
-				hp = 1;
-			call_ii(g_fno_hp, iic, hp);
-			n_revive++;
-		}
-	}
-	if (g_rq_verbose || g_rq_terminal)
-		rq_log("orb: spring heal full=%d revive30%%=%d (roster %d..%d)",
-		       n_full, n_revive, ORB_IIC_LO, ORB_IIC_HI);
+	int slot;
+	if (g_fno_pta_heal < 0)
+		return;
+	slot = vm_string_ref(string_ref(&EMPTY_STRING));
+	stack_push(slot);
+	vm_call(g_fno_pta_heal, -1);
 }
 
-/*
- * In 回復の泉処理, replace CALLFUNC ＰＴＡ体力回復 with CALLSYS.
- * The empty-string arg stays on the stack; syscall pops it.
- */
+static void orb_lua_heal(void)
+{
+	lua_State *L = rq_lua();
+
+	if (!L || g_heal_ref == LUA_NOREF) {
+		orb_vanilla_pta_heal();
+		return;
+	}
+	lua_rawgeti(L, LUA_REGISTRYINDEX, g_heal_ref);
+	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+		rq_log("orb on_heal error: %s", lua_tostring(L, -1));
+		lua_pop(L, 1);
+		orb_vanilla_pta_heal();
+	}
+}
+
 static int patch_spring_heal(struct ain *ain, int spring_fno, int pta_heal_fno)
 {
 	uint32_t start, end, ip;
@@ -147,7 +146,7 @@ static int patch_spring_heal(struct ain *ain, int spring_fno, int pta_heal_fno)
 		if (op == CALLFUNC && orb_rd32(ain->code + ip + 2) == pta_heal_fno) {
 			orb_wr16(ain->code + ip, CALLSYS);
 			orb_wr32(ain->code + ip + 2, VM_XSYS_ORB_HEAL);
-			rq_log("orb: patched 回復の泉処理 CALLFUNC ＰＴＡ体力回復 -> CALLSYS");
+			rq_log("orb: patched 回復の泉処理 CALLFUNC ＰＴＡ体力回復 -> CALLSYS (Lua on_heal)");
 			return 1;
 		}
 		ip += (uint32_t)len;
@@ -164,7 +163,7 @@ int rq_orb_syscall(int code)
 	case VM_XSYS_ORB_HEAL:
 		str = stack_pop().i;
 		heap_unref(str);
-		orb_heal();
+		orb_lua_heal();
 		return 1;
 	default:
 		return 0;
@@ -182,6 +181,7 @@ int rq_orb_install(struct ain *ain)
 
 	f_spring = find_fn(ain, "回復の泉処理");
 	f_pta = find_fn(ain, "ＰＴＡ体力回復");
+	g_fno_pta_heal = f_pta;
 	g_fno_state = find_fn(ain, "Ｃ登録状態");
 	g_fno_status = find_fn(ain, "Ｃ状態変化");
 	g_fno_hp = find_fn(ain, "Ｃ体力");
@@ -199,8 +199,102 @@ int rq_orb_install(struct ain *ain)
 		return 0;
 
 	g_on = 1;
-	rq_log("orb: recovery spring heals 登録状態 1+2 full; 3->控え @ 30%% HP");
+	rq_log("orb: spring hook ready (Lua on_heal; Carolie/flash/tile vanilla)");
 	return 1;
+}
+
+int rq_lua_orb_on_heal(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+	if (g_heal_ref != LUA_NOREF)
+		luaL_unref(L, LUA_REGISTRYINDEX, g_heal_ref);
+	lua_pushvalue(L, 1);
+	g_heal_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	return 0;
+}
+
+int rq_lua_orb_roster(lua_State *L)
+{
+	int iic, n = 0, state_filter = -1;
+
+	if (lua_isnumber(L, 1))
+		state_filter = (int)lua_tointeger(L, 1);
+
+	lua_newtable(L);
+	for (iic = ORB_IIC_LO; iic <= ORB_IIC_HI; iic++) {
+		int state = call_ii(g_fno_state, iic, -1);
+		int hp, maxhp;
+		if (state == 0)
+			continue;
+		if (state_filter >= 0 && state != state_filter)
+			continue;
+		hp = call_ii(g_fno_hp, iic, -1);
+		maxhp = call_ii(g_fno_hpmax, iic, -1);
+		n++;
+		lua_newtable(L);
+		lua_pushinteger(L, iic);
+		lua_setfield(L, -2, "iic");
+		lua_pushinteger(L, state);
+		lua_setfield(L, -2, "state");
+		lua_pushinteger(L, hp);
+		lua_setfield(L, -2, "hp");
+		lua_pushinteger(L, maxhp);
+		lua_setfield(L, -2, "max_hp");
+		lua_rawseti(L, -2, n);
+	}
+	return 1;
+}
+
+int rq_lua_orb_get_state(lua_State *L)
+{
+	int iic = (int)luaL_checkinteger(L, 1);
+	lua_pushinteger(L, call_ii(g_fno_state, iic, -1));
+	return 1;
+}
+
+int rq_lua_orb_set_state(lua_State *L)
+{
+	int iic = (int)luaL_checkinteger(L, 1);
+	int state = (int)luaL_checkinteger(L, 2);
+	call_ii(g_fno_state, iic, state);
+	return 0;
+}
+
+int rq_lua_orb_set_status(lua_State *L)
+{
+	int iic = (int)luaL_checkinteger(L, 1);
+	int status = (int)luaL_checkinteger(L, 2);
+	call_ii(g_fno_status, iic, status);
+	return 0;
+}
+
+int rq_lua_orb_get_hp(lua_State *L)
+{
+	int iic = (int)luaL_checkinteger(L, 1);
+	lua_pushinteger(L, call_ii(g_fno_hp, iic, -1));
+	return 1;
+}
+
+int rq_lua_orb_get_max_hp(lua_State *L)
+{
+	int iic = (int)luaL_checkinteger(L, 1);
+	lua_pushinteger(L, call_ii(g_fno_hpmax, iic, -1));
+	return 1;
+}
+
+int rq_lua_orb_set_hp(lua_State *L)
+{
+	int iic = (int)luaL_checkinteger(L, 1);
+	int hp = (int)luaL_checkinteger(L, 2);
+	call_ii(g_fno_hp, iic, hp);
+	return 0;
+}
+
+int rq_lua_orb_full_heal(lua_State *L)
+{
+	int iic = (int)luaL_checkinteger(L, 1);
+	call_supply_full(iic);
+	return 0;
 }
 
 #endif /* RQ_MODLOADER */
